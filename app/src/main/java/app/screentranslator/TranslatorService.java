@@ -54,9 +54,6 @@ import android.widget.Toast;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -94,9 +91,6 @@ public class TranslatorService extends Service {
     private static final int LIVE_SAMPLES = 40000;            // pixels compared per check
     private static final int LIVE_PIXEL_DIFF = 28;            // brightness change that counts as "different"
     private static final float LIVE_BIG_CHANGE = 0.05f;       // 5% of the area: e.g. scrolled to new content
-    private static final int LIVE_SHOWN_ITEMS = Prompts.ONLINE_SHOWN_ITEMS;   // shown lines given to the AI
-    private static final int LIVE_SHOWN_CHARS = Prompts.ONLINE_SHOWN_CHARS;
-    private static final int LIVE_SEEN_LIMIT = 3000;
     private static final int LIVE_SUMMARY_SENTENCES = 3;      // summarize after about this many new sentences...
     private static final long LIVE_SUMMARY_WAIT_MS = 6000;    // ...or when no new text came for this long
     private static final int LIVE_SUMMARY_MAX_CHARS = 900;
@@ -119,8 +113,7 @@ public class TranslatorService extends Service {
         final boolean wholeScreen;
         Rect region;          // area being watched, in screen pixels
         Point screen;         // screen size when the area was chosen
-        final LinkedHashSet<String> shownKeys = new LinkedHashSet<>();          // everything shown
-        final ArrayDeque<Translation.Line> shownLines = new ArrayDeque<>();     // the newest, for the AI
+        LiveLines lines;      // what the panel shows, and sentences waiting to finish
         boolean summaryMode;
         final List<Translation.Line> pending = new ArrayList<>();               // waiting to be summarized
         final ArrayDeque<String> summaries = new ArrayDeque<>();
@@ -681,7 +674,7 @@ public class TranslatorService extends Service {
         cardShowOriginal = settings.showOriginal;
         memory.useLanguage(settings.language);
         final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
-                cardStatus(id), memory.copy(), null, null);
+                cardStatus(id), memory.copy(), null, null, null);
         worker.execute(() -> {
             String text;
             boolean ok;
@@ -815,6 +808,8 @@ public class TranslatorService extends Service {
         session.maxInterval = settings.liveMaxIntervalMs();
         session.interval = session.minInterval;
         session.summaryMode = prefs.summaryMode();
+        session.lines = new LiveLines(prefs.waitForSentences(),
+                line -> memory.add(line.original, line.translation));
         memory.useLanguage(settings.language);
         live = session;
 
@@ -842,9 +837,7 @@ public class TranslatorService extends Service {
                 if (live != null) {
                     live.pending.clear();
                     live.summaries.clear();
-                    while (live.shownLines.size() > 5) {   // keep only what's probably still on screen
-                        live.shownLines.removeFirst();
-                    }
+                    live.lines.forgetOlder(5);   // keep only what's probably still on screen
                 }
             }
 
@@ -972,6 +965,7 @@ public class TranslatorService extends Service {
         if (session.inFlight || now < session.errorUntil) {
             return;
         }
+        releaseFinishedWaiting(session, now);
         if (summaryDue(session, now)) {
             summarizeLive(session);
             return;
@@ -1027,7 +1021,8 @@ public class TranslatorService extends Service {
         session.maxInterval = settings.liveMaxIntervalMs();
         memory.useLanguage(settings.language);
         final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
-                liveStatus(session), memory.copy(), shownForAi(session), new HashSet<>(session.shownKeys));
+                liveStatus(session), memory.copy(), session.lines.shownForAi(), session.lines.shownKeys(),
+                session.lines.waitForSentences ? session.lines.waitingLines() : null);
         worker.execute(() -> {
             List<Translation.Line> lines = null;
             TranslateException problem = null;
@@ -1052,23 +1047,6 @@ public class TranslatorService extends Service {
                 livePanel.setStatus(message, COLOR_BUSY);
             }
         });
-    }
-
-    /** The newest lines this Live panel shows, oldest first: the AI leaves these out and continues from them. */
-    private static List<Translation.Line> shownForAi(LiveSession session) {
-        List<Translation.Line> picked = new ArrayList<>();
-        int chars = 0;
-        Iterator<Translation.Line> newestFirst = session.shownLines.descendingIterator();
-        while (newestFirst.hasNext() && picked.size() < LIVE_SHOWN_ITEMS) {
-            Translation.Line line = newestFirst.next();
-            int size = line.original.length() + line.translation.length();
-            if (chars + size > LIVE_SHOWN_CHARS && !picked.isEmpty()) {
-                break;
-            }
-            chars += size;
-            picked.add(0, line);
-        }
-        return picked;
     }
 
     private void onLiveResult(LiveSession session, List<Translation.Line> lines, TranslateException failure,
@@ -1096,33 +1074,17 @@ public class TranslatorService extends Service {
         }
         session.lastError = null;
 
-        // Check every line against what's already shown; keep only what's new.
-        List<Translation.Line> fresh = new ArrayList<>();
-        for (Translation.Line line : lines) {
-            String original = line.original.isEmpty() ? line.translation : line.original;
-            String key = Translation.normalize(original);
-            if (key.isEmpty() || alreadyShown(session, key)) {
-                continue;
-            }
-            boolean sameLanguage = !line.original.isEmpty() && key.equals(Translation.normalize(line.translation));
-            markShown(session, key, sameLanguage ? null : line);
-            if (sameLanguage) {
-                continue;   // already in the target language
-            }
-            memory.add(line.original, line.translation);
-            fresh.add(line);
-        }
+        // Keep only what's new; unfinished sentences wait for the rest (see LiveLines).
+        List<Translation.Line> fresh = session.lines.take(lines, now);
         if (fresh.isEmpty()) {
             // Nothing new (e.g. an animation changed the screen): check less often for a while.
             session.interval = Math.min(session.interval * 2, session.maxInterval);
         } else {
             session.interval = session.minInterval;
-            if (session.summaryMode) {
-                session.pending.addAll(fresh);   // summarized together once a few sentences have come
-                session.lastNewLineAt = now;
-            } else {
-                showLiveLines(fresh, showOriginal);
-            }
+            deliver(session, fresh, showOriginal, now);
+        }
+        if (session.lines.hasWaiting()) {
+            session.interval = session.minInterval;   // keep an eye on the sentence that's being finished
         }
         session.nextAllowedAt = session.sentAt + session.interval;
         if (summaryDue(session, now) && !session.paused) {
@@ -1146,30 +1108,34 @@ public class TranslatorService extends Service {
         }
     }
 
-    /** True if this text (or a slightly different reading of it) is already on the Live panel. */
-    private static boolean alreadyShown(LiveSession session, String key) {
-        if (session.shownKeys.contains(key)) {
-            return true;
+    /** Shows new lines (or keeps them for the next summary). */
+    private void deliver(LiveSession session, List<Translation.Line> lines, boolean showOriginal, long now) {
+        if (lines.isEmpty()) {
+            return;
         }
-        for (Translation.Line line : session.shownLines) {
-            if (TranslationMemory.coveredBy(key, Translation.normalize(line.original))) {
-                return true;
-            }
+        if (session.summaryMode) {
+            session.pending.addAll(lines);   // summarized together once a few sentences have come
+            session.lastNewLineAt = now;
+        } else {
+            showLiveLines(lines, showOriginal);
         }
-        return false;
     }
 
-    private static void markShown(LiveSession session, String key, Translation.Line line) {
-        session.shownKeys.add(key);
-        if (session.shownKeys.size() > LIVE_SEEN_LIMIT) {
-            Iterator<String> oldest = session.shownKeys.iterator();
-            oldest.next();
-            oldest.remove();
+    /**
+     * Checked every tick: an unfinished sentence that stopped changing (nothing on screen moved for a
+     * while) is finished after all, e.g. a sentence without a full stop. It's shown now.
+     */
+    private void releaseFinishedWaiting(LiveSession session, long now) {
+        if (!session.lines.hasWaiting() || livePanel == null) {
+            return;
         }
-        if (line != null) {
-            session.shownLines.addLast(line);
-            while (session.shownLines.size() > LIVE_SHOWN_ITEMS) {
-                session.shownLines.removeFirst();
+        boolean screenStill = session.sentSig != null && session.currentSig != null
+                && !isChange(countChanged(session.sentSig, session.currentSig), session.currentSig.length);
+        List<Translation.Line> released = session.lines.releaseFinished(now, screenStill);
+        if (!released.isEmpty()) {
+            deliver(session, released, new Prefs(this).showOriginal(), now);
+            if (!session.paused) {
+                livePanel.setStatus(watchingText(session), COLOR_WATCHING);
             }
         }
     }
@@ -1292,6 +1258,9 @@ public class TranslatorService extends Service {
     }
 
     private static String watchingText(LiveSession session) {
+        if (session.lines.hasWaiting()) {
+            return "Waiting for the sentence to finish…";
+        }
         String text = "Watching · " + session.checks + (session.checks == 1 ? " check" : " checks");
         if (session.summaryMode && !session.pending.isEmpty()) {
             text += " · " + session.pending.size() + " for the summary";

@@ -93,6 +93,7 @@ public class MainActivity extends Activity {
     private EditText languageField;
     private CheckBox originalBox;
     private CheckBox summaryBox;
+    private CheckBox waitSentencesBox;
 
     // Read aloud
     private CheckBox readAloudBox;
@@ -695,6 +696,16 @@ public class MainActivity extends Activity {
         add(column, secondary("1–3 sentences in your language. On a translation card, tap Full to see "
                 + "everything (or Summary on any card). In Live mode, a summary appears every few sentences; "
                 + "switch with ≡ in the Live panel. Each summary is one more AI request."), 0, false);
+
+        waitSentencesBox = new CheckBox(this);
+        waitSentencesBox.setText("Live: wait until a sentence is finished before translating it");
+        waitSentencesBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        waitSentencesBox.setChecked(prefs.waitForSentences());
+        waitSentencesBox.setOnCheckedChangeListener((box, checked) -> prefs.setWaitForSentences(checked));
+        add(column, waitSentencesBox, 4, false);
+        add(column, secondary("For captions, subtitles and messages that appear word by word: a sentence is "
+                + "translated once it ends (or stops changing for a few seconds), so you get whole sentences "
+                + "instead of pieces. Turn off for the fastest translations."), 0, false);
         add(column, secondary("The app remembers what it already translated while the bubble is on: text it "
                 + "has seen isn't translated again, and new text is translated as the continuation of the "
                 + "earlier lines, so conversations, videos and stories stay consistent. Tap 🗑 in the Live "

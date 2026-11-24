@@ -114,7 +114,8 @@ final class OnDeviceEngine implements TranslationEngine {
         String[] translations = translateNew(fresh, alreadyShown, request);
         for (int i = 0; i < fresh.size(); i++) {
             if (translations[i] != null && !translations[i].isEmpty()) {
-                lines.add(new Translation.Line(fresh.get(i), translations[i]));
+                lines.add(new Translation.Line(fresh.get(i), translations[i],
+                        Translation.looksComplete(fresh.get(i))));
             }
         }
         return lines;

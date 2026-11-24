@@ -38,6 +38,7 @@ final class Prefs {
     private static final String KEY_AI_VOICE_MOOD = "ai_voice_mood";
     private static final String KEY_OPENAI_VOICE_NAME = "openai_voice_name";
     private static final String KEY_SUMMARY = "summary_mode";
+    private static final String KEY_WAIT_SENTENCES = "wait_for_sentences";
     private static final String KEY_AI_PAUSED_UNTIL = "ai_voice_paused_until";
     private static final String KEY_AI_PAUSED_FOR = "ai_voice_paused_for";
 
@@ -108,6 +109,18 @@ final class Prefs {
 
     void setSummaryMode(boolean on) {
         store.edit().putBoolean(KEY_SUMMARY, on).apply();
+    }
+
+    /**
+     * Live mode: don't translate a sentence while it's still being typed, spoken or revealed;
+     * wait until it's finished (or stops changing). On unless turned off.
+     */
+    boolean waitForSentences() {
+        return store.getBoolean(KEY_WAIT_SENTENCES, true);
+    }
+
+    void setWaitForSentences(boolean on) {
+        store.edit().putBoolean(KEY_WAIT_SENTENCES, on).apply();
     }
 
     /** Read every new translation aloud automatically. */

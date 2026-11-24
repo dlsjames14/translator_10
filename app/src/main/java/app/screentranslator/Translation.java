@@ -18,11 +18,49 @@ final class Translation {
     static final class Line {
         final String original;
         final String translation;
+        /** False while the sentence is still unfinished (being typed, spoken or revealed, or cut off). */
+        final boolean complete;
 
         Line(String original, String translation) {
+            this(original, translation, true);
+        }
+
+        Line(String original, String translation, boolean complete) {
             this.original = original == null ? "" : original;
             this.translation = translation == null ? "" : translation;
+            this.complete = complete;
         }
+    }
+
+    /**
+     * A quick guess whether text is a finished sentence: it ends with sentence punctuation, or with
+     * a typical Korean or Japanese sentence ending. Used when the AI doesn't say (the on-device AI).
+     * Text that doesn't look finished still appears once it stops changing.
+     */
+    static boolean looksComplete(String text) {
+        String value = text == null ? "" : text.trim();
+        // Look past closing quotes and brackets, emoji and other symbols at the end.
+        int end = value.length();
+        while (end > 0) {
+            char c = value.charAt(end - 1);
+            int type = Character.getType(c);
+            boolean skip = "\"'”’)]）」』】>".indexOf(c) >= 0 || Character.isWhitespace(c)
+                    || type == Character.SURROGATE || type == Character.OTHER_SYMBOL
+                    || type == Character.NON_SPACING_MARK || c == '️' || c == '‍';
+            if (!skip) {
+                break;
+            }
+            end--;
+        }
+        if (end == 0) {
+            return true;   // nothing that could be continued
+        }
+        char last = value.charAt(end - 1);
+        if (".!?。！？…~～".indexOf(last) >= 0) {
+            return true;
+        }
+        // Korean sentence endings (-다, -요, -죠, -까, -네, -군) and Japanese ones (-す, -た, -よ, -ね).
+        return "다요죠까네군すたよね".indexOf(last) >= 0;
     }
 
     /** Lets an engine report progress, e.g. "Starting the on-device AI…". */
@@ -41,19 +79,25 @@ final class Translation {
         final List<Line> shown;
         /** Live mode: {@link #normalize} keys of everything this Live panel already shows. */
         final Set<String> shownKeys;
+        /** Live mode: unfinished sentences seen before and not shown yet, waiting for the rest. */
+        final List<Line> waiting;
+        /** Live mode: wait for sentences to finish (the AI says which ones are unfinished). */
+        final boolean waitForSentences;
 
         Request(String language, boolean showOriginal, StatusListener status) {
-            this(language, showOriginal, status, null, null, null);
+            this(language, showOriginal, status, null, null, null, null);
         }
 
         Request(String language, boolean showOriginal, StatusListener status, TranslationMemory memory,
-                List<Line> shown, Set<String> shownKeys) {
+                List<Line> shown, Set<String> shownKeys, List<Line> waiting) {
             this.language = language;
             this.showOriginal = showOriginal;
             this.status = status == null ? message -> { } : status;
             this.memory = memory == null ? new TranslationMemory() : memory;
             this.shown = shown == null ? Collections.<Line>emptyList() : shown;
             this.shownKeys = shownKeys == null ? Collections.<String>emptySet() : shownKeys;
+            this.waitForSentences = waiting != null;
+            this.waiting = waiting == null ? Collections.<Line>emptyList() : waiting;
         }
 
         /** Earlier translations to show the AI as context, oldest first (not the ones in {@link #shown}). */

@@ -125,6 +125,23 @@ uses the new choice.
    hear it, long-press to copy it.
 5. Tap the bubble again to pick a different area, or to switch back to Translate once.
 
+**Whole sentences, not pieces**
+
+Live captions, subtitles and chat replies often appear a few words at a time. With **Live: wait until
+a sentence is finished before translating it** (on by default), Live mode doesn't translate a sentence
+while it's still growing:
+
+- The AI says whether each sentence on screen is finished. (The on-device AI looks for a full stop,
+  question mark, or a Korean or Japanese sentence ending.)
+- An unfinished sentence waits, and the panel says *Waiting for the sentence to finish…*. When more
+  words appear, the longer version replaces it; the AI is reminded of it, so if the next subtitle
+  continues it, both parts are translated together as one sentence.
+- It's translated as soon as it ends. Text without a full stop (a label, a title) appears once it
+  stops changing for 2.5 seconds. A very long sentence appears after 10 seconds at most, and text
+  that disappears before it ends is still shown, so nothing is lost.
+
+Turn the option off in the app for the fastest, word-by-word translations.
+
 How Live mode stays light:
 
 - It only checks when the watched area actually changes, and waits until the screen stops scrolling
@@ -281,6 +298,7 @@ arm64 code only.
 | `Speaker.java` | Reads translations aloud: the phone voice (Android text-to-speech, voice picked from the language name) or the AI voice, with automatic fallback; turns other sound down while speaking. |
 | `AiVoice.java` | The natural AI voice: streams Gemini 3.8 TTS audio (or OpenAI's, below) and plays it as it arrives (style sent separately so it isn't read aloud); the next piece is generated while the current one plays. |
 | `OpenAiSpeech.java` | The OpenAI voice: one Realtime API WebSocket session per piece (`gpt-realtime-2.1-mini`, set up as a text-to-speech reader), streaming 24 kHz PCM audio back to `AiVoice`. |
+| `LiveLines.java` | Live mode's list of what's shown, and of unfinished sentences waiting to end (whole sentences, not pieces). |
 | `TranslationMemory.java` | Remembers what was translated (original → translation): reused for text seen before, given to the AI as context, and used to leave out text that's already shown. |
 | `Prefs.java`, `EngineSettings.java` | Saved settings, and the snapshot each translation uses. |
 

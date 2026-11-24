@@ -64,8 +64,11 @@ final class Prompts {
      *
      * @param shown   what the Live panel already shows (left out), oldest first
      * @param history other earlier translations, for context only, oldest first
+     * @param waiting unfinished sentences seen before, not shown yet (null or empty when not waiting)
      */
-    static String live(String language, List<Translation.Line> shown, List<TranslationMemory.Entry> history) {
+    static String live(String language, List<Translation.Line> shown, List<TranslationMemory.Entry> history,
+                       List<Translation.Line> waiting) {
+        boolean askComplete = waiting != null;
         StringBuilder text = new StringBuilder();
         text.append("You are an expert live screen translator. The image is part of a phone screen, for ")
                 .append("example a chat, a video with subtitles, a game or a web page, and it keeps changing. ")
@@ -80,6 +83,15 @@ final class Prompts {
                         .append(quote(line.translation)).append('\n');
             }
         }
+        if (askComplete && !waiting.isEmpty()) {
+            text.append("\nSTILL UNFINISHED. Seen before but not shown yet, because the sentence hadn't ended:\n");
+            for (Translation.Line line : waiting) {
+                text.append("- ").append(quote(line.original)).append('\n');
+            }
+            text.append("If the image still shows one of these, include it again. If the image shows how it ")
+                    .append("continues, give the whole sentence as ONE item (its \"original\" is the full ")
+                    .append("sentence, even if the beginning is no longer on screen).\n");
+        }
         text.append("\nDo this:\n")
                 .append("1. Read every piece of text in the image.\n");
         if (!shown.isEmpty()) {
@@ -93,11 +105,21 @@ final class Prompts {
             text.append("2. Translate each piece into ").append(language).append(".\n");
         }
         text.append("\nReply with JSON only, in exactly this form: ")
-                .append("{\"lines\":[{\"original\":\"...\",\"translation\":\"...\"}]}\n")
+                .append(askComplete
+                        ? "{\"lines\":[{\"original\":\"...\",\"translation\":\"...\",\"complete\":true}]}\n"
+                        : "{\"lines\":[{\"original\":\"...\",\"translation\":\"...\"}]}\n")
                 .append("Rules:\n")
                 .append("- One item per message, sentence, label or button, in on-screen reading order ")
                 .append("(top to bottom, left to right). If one sentence is broken over several lines on ")
-                .append("screen (like a two-line subtitle), keep it as one item.\n")
+                .append("screen (like a two-line subtitle), keep it as one item.\n");
+        if (askComplete) {
+            text.append("- \"complete\" is false only when the sentence clearly hasn't ended yet: it stops in ")
+                    .append("the middle because it is still being typed, spoken or revealed (like live captions ")
+                    .append("that are still growing, or a chat reply still being written), or it is cut off at ")
+                    .append("the edge. Finished sentences, chat messages, labels, buttons and titles are ")
+                    .append("complete: true. Translate unfinished text too, as well as you can.\n");
+        }
+        text
                 .append("- \"original\" is the text exactly as shown. \"translation\" is its natural ")
                 .append(language).append(" translation.\n")
                 .append("- Skip text that is already in ").append(language)
@@ -206,7 +228,11 @@ final class Prompts {
                         }
                         String translation = string(item, "translation").trim();
                         if (!translation.isEmpty()) {
-                            lines.add(new Translation.Line(string(item, "original").trim(), translation));
+                            String original = string(item, "original").trim();
+                            boolean complete = item.has("complete") && !item.isNull("complete")
+                                    ? item.optBoolean("complete", true)
+                                    : Translation.looksComplete(original.isEmpty() ? translation : original);
+                            lines.add(new Translation.Line(original, translation, complete));
                         }
                     }
                 }

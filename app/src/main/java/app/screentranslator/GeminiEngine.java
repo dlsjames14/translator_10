@@ -40,7 +40,8 @@ final class GeminiEngine implements TranslationEngine {
     public List<Translation.Line> translateLive(Bitmap image, Translation.Request request)
             throws TranslateException {
         String prompt = Prompts.live(request.language, request.shown,
-                request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS));
+                request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS),
+                request.waitForSentences ? request.waiting : null);
         String content = complete(prompt,
                 "Check which text in this screenshot is new, and translate only that.",
                 Http.jpegBase64(image), true);
