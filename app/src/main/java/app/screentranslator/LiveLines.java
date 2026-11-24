@@ -57,10 +57,16 @@ final class LiveLines {
     private final ArrayDeque<Translation.Line> shownLines = new ArrayDeque<>();     // the newest, for the AI
     private final LinkedHashMap<String, Waiting> waiting = new LinkedHashMap<>();
     private final Listener listener;
+    private final boolean skipRepeats;
     boolean waitForSentences;
 
-    LiveLines(boolean waitForSentences, Listener listener) {
+    /**
+     * @param skipRepeats leave out text that's already shown (on screen it's the same text seen again;
+     *                    in speech, saying something twice is new, so audio translation passes false)
+     */
+    LiveLines(boolean waitForSentences, boolean skipRepeats, Listener listener) {
         this.waitForSentences = waitForSentences;
+        this.skipRepeats = skipRepeats;
         this.listener = listener == null ? line -> { } : listener;
     }
 
@@ -74,7 +80,7 @@ final class LiveLines {
         for (Translation.Line line : lines) {
             String original = line.original.isEmpty() ? line.translation : line.original;
             String key = Translation.normalize(original);
-            if (key.isEmpty() || alreadyShown(key)) {
+            if (key.isEmpty() || (skipRepeats && alreadyShown(key))) {
                 continue;
             }
             boolean sameLanguage = !line.original.isEmpty() && key.equals(Translation.normalize(line.translation));
@@ -269,7 +275,7 @@ final class LiveLines {
                 continue;
             }
             held.remove();
-            if (!alreadyShown(next.key)) {
+            if (!skipRepeats || !alreadyShown(next.key)) {
                 accept(next.key, next.line);
                 released.add(next.line);
             }

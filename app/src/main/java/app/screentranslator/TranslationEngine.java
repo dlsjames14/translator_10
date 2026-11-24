@@ -18,6 +18,16 @@ interface TranslationEngine {
     List<Translation.Line> translateLive(Bitmap image, Translation.Request request) throws TranslateException;
 
     /**
+     * Audio translation: what's said in a clip of speech (a WAV file, 16 kHz mono), sentence by
+     * sentence, with translations. {@link Translation.Request#shown} holds what was just said (for
+     * context) and {@link Translation.Request#waiting} a sentence the previous clip cut off.
+     *
+     * @param microphone true for the microphone, false for sound playing on the phone
+     */
+    List<Translation.Line> translateSpeech(byte[] wav, Translation.Request request, boolean microphone)
+            throws TranslateException;
+
+    /**
      * A short summary (1–3 sentences) in the target language.
      *
      * @param text    what to summarize (translations, possibly with their originals)

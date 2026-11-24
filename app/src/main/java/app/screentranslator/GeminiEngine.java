@@ -27,8 +27,8 @@ final class GeminiEngine implements TranslationEngine {
     public Translation.Result translateOnce(Bitmap image, Translation.Request request) throws TranslateException {
         String prompt = Prompts.once(request.language, request.showOriginal,
                 request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS));
-        String content = complete(prompt, "Translate the text in this screenshot.", Http.jpegBase64(image),
-                false).trim();
+        String content = complete(prompt, "Translate the text in this screenshot.", IMAGE,
+                Http.jpegBase64(image), false).trim();
         if (content.isEmpty()) {
             content = Translation.NO_TEXT;
         }
@@ -44,14 +44,24 @@ final class GeminiEngine implements TranslationEngine {
                 request.waitForSentences ? request.waiting : null);
         String content = complete(prompt,
                 "Check which text in this screenshot is new, and translate only that.",
-                Http.jpegBase64(image), true);
+                IMAGE, Http.jpegBase64(image), true);
+        return Prompts.parseLines(content);
+    }
+
+    @Override
+    public List<Translation.Line> translateSpeech(byte[] wav, Translation.Request request, boolean microphone)
+            throws TranslateException {
+        String prompt = Prompts.speech(request.language, microphone, request.shown,
+                request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS), request.waiting);
+        String content = complete(prompt, "Write down and translate what is said in this audio.", "audio/wav",
+                android.util.Base64.encodeToString(wav, android.util.Base64.NO_WRAP), true);
         return Prompts.parseLines(content);
     }
 
     @Override
     public String summarize(String text, String earlier, Translation.Request request) throws TranslateException {
         return Prompts.cleanSummary(complete(Prompts.summarySystem(request.language),
-                Prompts.summaryInput(text, earlier), null, false));
+                Prompts.summaryInput(text, earlier), null, null, false));
     }
 
     @Override
@@ -59,20 +69,23 @@ final class GeminiEngine implements TranslationEngine {
         // Nothing to free.
     }
 
-    private String complete(String systemPrompt, String userText, String jpegBase64, boolean jsonReply)
-            throws TranslateException {
+    private static final String IMAGE = "image/jpeg";
+
+    /** One request: instructions, a message, and optionally a picture or a sound clip (mediaType + base64). */
+    private String complete(String systemPrompt, String userText, String mediaType, String mediaBase64,
+                            boolean jsonReply) throws TranslateException {
         if (apiKey == null || apiKey.isEmpty()) {
             throw new TranslateException("Add your Gemini API key in the Screen Translator app first.", true);
         }
         // Optional extras; if this model rejects one, it's dropped and the request is sent again.
         boolean quickThinking = true;
-        boolean sharpImage = true;
+        boolean sharpImage = IMAGE.equals(mediaType);
         boolean jsonFormat = jsonReply;
         String url = BASE_URL + model + ":generateContent";
         String[] headers = {"x-goog-api-key", apiKey};
         for (int attempt = 0; attempt < 4; attempt++) {
             Http.Reply reply = Http.postJson(url, headers,
-                    requestBody(systemPrompt, userText, jpegBase64, quickThinking, sharpImage, jsonFormat));
+                    requestBody(systemPrompt, userText, mediaType, mediaBase64, quickThinking, sharpImage, jsonFormat));
             if (reply.code == 400) {
                 String body = reply.body.toLowerCase(Locale.ROOT);
                 if (quickThinking && body.contains("thinking")) {
@@ -96,18 +109,18 @@ final class GeminiEngine implements TranslationEngine {
         throw new TranslateException("Gemini couldn't handle the request. Try a different Gemini model.", true);
     }
 
-    private static String requestBody(String systemPrompt, String userText, String jpegBase64,
+    private static String requestBody(String systemPrompt, String userText, String mediaType, String mediaBase64,
                                       boolean quickThinking, boolean sharpImage, boolean jsonFormat)
             throws TranslateException {
         try {
             JSONArray parts = new JSONArray().put(new JSONObject().put("text", userText));
-            if (jpegBase64 != null) {   // text only for summaries
-                JSONObject imagePart = new JSONObject()
-                        .put("inlineData", new JSONObject().put("mimeType", "image/jpeg").put("data", jpegBase64));
+            if (mediaBase64 != null) {   // (text only for summaries)
+                JSONObject mediaPart = new JSONObject()
+                        .put("inlineData", new JSONObject().put("mimeType", mediaType).put("data", mediaBase64));
                 if (sharpImage) {
-                    imagePart.put("mediaResolution", new JSONObject().put("level", "media_resolution_high"));
+                    mediaPart.put("mediaResolution", new JSONObject().put("level", "media_resolution_high"));
                 }
-                parts.put(imagePart);
+                parts.put(mediaPart);
             }
             JSONObject content = new JSONObject()
                     .put("role", "user")

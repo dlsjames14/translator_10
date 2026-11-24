@@ -71,6 +71,13 @@ public class TranslatorService extends Service {
 
     static final String ACTION_START = "app.screentranslator.action.START";
     static final String ACTION_STOP = "app.screentranslator.action.STOP";
+    /** Sent by the app after the microphone permission was granted: allow audio translation now. */
+    static final String ACTION_ALLOW_AUDIO = "app.screentranslator.action.ALLOW_AUDIO";
+    static final int AUDIO_PHONE = 1;          // audio translation of the phone's sound
+    static final int AUDIO_MIC = 2;            // audio translation of the microphone
+    private static final int AUDIO_CLIP_SECONDS = 12;             // longest clip sent to Gemini / ChatGPT
+    private static final int AUDIO_CLIP_SECONDS_ON_DEVICE = 20;   // Gemma hears up to 30 s
+    private static final int AUDIO_MAX_WAITING_CLIPS = 3;         // more than this: skip the oldest
     static final String EXTRA_RESULT_CODE = "result_code";
     static final String EXTRA_RESULT_DATA = "result_data";
 
@@ -114,6 +121,8 @@ public class TranslatorService extends Service {
         Rect region;          // area being watched, in screen pixels
         Point screen;         // screen size when the area was chosen
         LiveLines lines;      // what the panel shows, and sentences waiting to finish
+        int audioSource;      // 0 for watching the screen; AUDIO_PHONE or AUDIO_MIC for audio translation
+        final List<short[]> audioQueue = new ArrayList<>();   // clips of speech waiting to be translated
         boolean summaryMode;
         final List<Translation.Line> pending = new ArrayList<>();               // waiting to be summarized
         final ArrayDeque<String> summaries = new ArrayDeque<>();
@@ -184,6 +193,8 @@ public class TranslatorService extends Service {
 
     // Reading aloud
     private Speaker speaker;
+    private AudioListener audioListener;
+    private boolean foregroundWithMicrophone;   // the service may record (needs the permission at start)
     private TextView cardSpeak;
     private String cardSpokenText;
     private boolean cardShowOriginal;
@@ -214,6 +225,13 @@ public class TranslatorService extends Service {
             start(intent);
         } else if (ACTION_STOP.equals(action)) {
             shutdown();
+        } else if (ACTION_ALLOW_AUDIO.equals(action)) {
+            if (running) {
+                goForeground();   // now with the microphone allowed
+                toast("Listening is allowed. Tap the bubble, then 🎧 Audio.");
+            } else {
+                stopSelf();
+            }
         } else if (!running) {
             stopSelf();
         }
@@ -296,10 +314,21 @@ public class TranslatorService extends Service {
                         Icon.createWithResource(this, R.drawable.ic_translate), "Stop", stop).build())
                 .build();
 
-        if (Build.VERSION.SDK_INT >= 29) {
+        // Recording (audio translation) is only allowed if the service says so when it starts, and
+        // Android only lets it say so once the microphone permission is granted.
+        boolean canRecord = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        if (canRecord) {
+            types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        }
+        try {
+            startForeground(NOTIFICATION_ID, notification, types);
+            foregroundWithMicrophone = canRecord;
+        } catch (RuntimeException e) {
+            // Android refused the microphone part (e.g. the app wasn't open just now): carry on without it.
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+            foregroundWithMicrophone = false;
         }
     }
 
@@ -531,38 +560,48 @@ public class TranslatorService extends Service {
         }
         final Point screen = new Point(captureWidth, captureHeight);
         final Prefs prefs = new Prefs(this);
-        final boolean[] liveMode = {prefs.liveMode()};
+        final String[] mode = {prefs.selectionMode()};
 
         FrameLayout layer = new FrameLayout(ui);
-        final SelectionView selection = new SelectionView(ui, area -> onAreaChosen(area, screen, liveMode[0]));
+        final SelectionView selection = new SelectionView(ui,
+                area -> onAreaChosen(area, screen, Prefs.MODE_LIVE.equals(mode[0])));
         layer.addView(selection, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // "Translate once | ● Live" switch
+        // 🎧 Audio: instead of choosing an area, choose what to listen to.
+        final LinearLayout audioChoices = audioChoices();
+        layer.addView(audioChoices, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+
+        // "Once | ● Live | 🎧 Audio" switch
         LinearLayout modes = new LinearLayout(ui);
         modes.setOrientation(LinearLayout.HORIZONTAL);
         modes.setPadding(dp(4), dp(4), dp(4), dp(4));
         modes.setBackground(Ui.rounded(0xCC000000, dp(26), 0x66FFFFFF, dp(1)));
-        final TextView onceTab = modeTab("Translate once");
+        final TextView onceTab = modeTab("Once");
         final TextView liveTab = modeTab("● Live");
+        final TextView audioTab = modeTab("🎧 Audio");
         final Runnable paintTabs = () -> {
-            styleTab(onceTab, !liveMode[0]);
-            styleTab(liveTab, liveMode[0]);
-            selection.setLive(liveMode[0]);
+            boolean audio = Prefs.MODE_AUDIO.equals(mode[0]);
+            styleTab(onceTab, Prefs.MODE_ONCE.equals(mode[0]));
+            styleTab(liveTab, Prefs.MODE_LIVE.equals(mode[0]));
+            styleTab(audioTab, audio);
+            selection.setLive(Prefs.MODE_LIVE.equals(mode[0]));
+            selection.setVisibility(audio ? View.INVISIBLE : View.VISIBLE);
+            audioChoices.setVisibility(audio ? View.VISIBLE : View.GONE);
         };
-        onceTab.setOnClickListener(v -> {
-            liveMode[0] = false;
-            prefs.setLiveMode(false);
+        View.OnClickListener pick = v -> {
+            mode[0] = v == audioTab ? Prefs.MODE_AUDIO : v == liveTab ? Prefs.MODE_LIVE : Prefs.MODE_ONCE;
+            prefs.setSelectionMode(mode[0]);
             paintTabs.run();
-        });
-        liveTab.setOnClickListener(v -> {
-            liveMode[0] = true;
-            prefs.setLiveMode(true);
-            paintTabs.run();
-        });
+        };
+        onceTab.setOnClickListener(pick);
+        liveTab.setOnClickListener(pick);
+        audioTab.setOnClickListener(pick);
         paintTabs.run();
         modes.addView(onceTab);
         modes.addView(liveTab);
+        modes.addView(audioTab);
         FrameLayout.LayoutParams modesParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
@@ -606,8 +645,51 @@ public class TranslatorService extends Service {
         tab.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         tab.setTypeface(Typeface.DEFAULT_BOLD);
         tab.setGravity(Gravity.CENTER);
-        tab.setPadding(dp(18), dp(10), dp(18), dp(10));
+        tab.setPadding(dp(16), dp(10), dp(16), dp(10));
         return tab;
+    }
+
+    /** The two buttons of the 🎧 Audio tab. */
+    private LinearLayout audioChoices() {
+        LinearLayout box = new LinearLayout(ui);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(16), dp(16), dp(16));
+        box.setBackground(Ui.rounded(0xE6000000, dp(22), 0x66FFFFFF, dp(1)));
+        TextView heading = new TextView(ui);
+        heading.setText("Translate what's being said");
+        heading.setTextColor(Color.WHITE);
+        heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        heading.setGravity(Gravity.CENTER);
+        box.addView(heading);
+        box.addView(audioChoice("📱  Sound on this phone",
+                "Videos, livestreams, voice messages: even without subtitles", () -> startAudio(false)));
+        box.addView(audioChoice("🎙  Microphone",
+                "People talking near you: a conversation, a class, an announcement", () -> startAudio(true)));
+        return box;
+    }
+
+    private View audioChoice(String title, String note, Runnable action) {
+        LinearLayout choice = new LinearLayout(ui);
+        choice.setOrientation(LinearLayout.VERTICAL);
+        choice.setPadding(dp(16), dp(12), dp(16), dp(12));
+        choice.setBackground(Ui.rounded(0xFFFFFFFF, dp(16)));
+        TextView name = new TextView(ui);
+        name.setText(title);
+        name.setTextColor(0xFF1B1C1F);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        choice.addView(name);
+        TextView detail = new TextView(ui);
+        detail.setText(note);
+        detail.setTextColor(0xFF5F6368);
+        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        choice.addView(detail);
+        choice.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(290), ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = dp(12);
+        choice.setLayoutParams(params);
+        return choice;
     }
 
     private void styleTab(TextView tab, boolean selected) {
@@ -807,9 +889,15 @@ public class TranslatorService extends Service {
         session.minInterval = settings.liveMinIntervalMs();
         session.maxInterval = settings.liveMaxIntervalMs();
         session.interval = session.minInterval;
-        session.summaryMode = prefs.summaryMode();
-        session.lines = new LiveLines(prefs.waitForSentences(),
+        session.lines = new LiveLines(prefs.waitForSentences(), true,
                 line -> memory.add(line.original, line.translation));
+        beginSession(session, prefs, settings);
+        livePanel.setStatus("Watching for new text…", COLOR_WATCHING);
+    }
+
+    /** Shared by Live and audio translation: settings, the panel, the red bubble, the ticking. */
+    private void beginSession(LiveSession session, Prefs prefs, EngineSettings settings) {
+        session.summaryMode = prefs.summaryMode();
         memory.useLanguage(settings.language);
         live = session;
 
@@ -887,7 +975,6 @@ public class TranslatorService extends Service {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
         placeLivePanel(params, session.panelAtBottom);
         windowManager.addView(livePanel.root, params);
-        livePanel.setStatus("Watching for new text…", COLOR_WATCHING);
 
         if (bubble != null) {
             bubble.setVisibility(View.VISIBLE);
@@ -897,7 +984,193 @@ public class TranslatorService extends Service {
         main.postDelayed(liveTick, LIVE_TICK_MS);
     }
 
+    // ----------------------------------------------------------------------------------------
+    // Audio translation (uses the Live panel)
+
+    /** 🎧 Audio: listen to the phone's sound or the microphone, and translate what's said. */
+    private void startAudio(boolean microphone) {
+        removeSelection();
+        stopLive();
+        hideCard();
+        if (bubble != null) {
+            bubble.setVisibility(View.VISIBLE);
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED || !foregroundWithMicrophone) {
+            askForMicrophone();
+            return;
+        }
+        Prefs prefs = new Prefs(this);
+        EngineSettings settings = new EngineSettings(prefs);
+        LiveSession session = new LiveSession(true, wholeScreenRegion(), new Point(captureWidth, captureHeight));
+        long now = SystemClock.uptimeMillis();
+        session.startedAt = now;
+        session.lastChangeAt = now;
+        session.panelAtBottom = true;
+        session.audioSource = microphone ? AUDIO_MIC : AUDIO_PHONE;
+        session.minInterval = 0;
+        session.maxInterval = 0;
+        // In speech, saying something again is new, so repeats aren't left out.
+        session.lines = new LiveLines(prefs.waitForSentences(), false,
+                line -> memory.add(line.original, line.translation));
+        beginSession(session, prefs, settings);
+        livePanel.setAudio((microphone ? "🎙 Mic · " : "📱 Phone sound · ") + prefs.language(),
+                "Listening. Whatever is said " + (microphone ? "near the phone" : "in videos, streams or "
+                        + "voice messages on this phone") + " appears here in " + prefs.language()
+                        + ", a sentence at a time, a moment after it's spoken. Tap a line to hear it, long-press "
+                        + "to copy it. ≡ gives short summaries instead."
+                        + (microphone ? " Use headphones if you turn on 🔊, so the phone doesn't hear itself."
+                        : " (Some apps don't allow their sound to be recorded; they stay silent here.)"));
+        if (startListening(session)) {
+            livePanel.setStatus("Listening…", COLOR_WATCHING);
+        }
+    }
+
+    /** Starts (or restarts, after a pause) the listening for an audio session. */
+    private boolean startListening(final LiveSession session) {
+        stopListening();
+        EngineSettings settings = new EngineSettings(new Prefs(this));
+        int maxSeconds = Prefs.ENGINE_ON_DEVICE.equals(settings.engine)
+                ? AUDIO_CLIP_SECONDS_ON_DEVICE : AUDIO_CLIP_SECONDS;
+        boolean microphone = session.audioSource == AUDIO_MIC;
+        try {
+            audioListener = new AudioListener(this, microphone ? null : projection, maxSeconds,
+                    new AudioListener.Callback() {
+                        @Override
+                        public void onClip(short[] pcm) {
+                            main.post(() -> onAudioClip(session, pcm));
+                        }
+
+                        @Override
+                        public void onProblem(String message) {
+                            main.post(() -> {
+                                if (live == session && livePanel != null) {
+                                    stopListening();
+                                    pauseLive(message);
+                                }
+                            });
+                        }
+                    });
+            audioListener.start();
+            return true;
+        } catch (IllegalStateException e) {
+            audioListener = null;
+            if (livePanel != null) {
+                pauseLive(e.getMessage());
+            }
+            return false;
+        }
+    }
+
+    private void stopListening() {
+        AudioListener listener = audioListener;
+        audioListener = null;
+        if (listener != null) {
+            listener.stop();
+        }
+    }
+
+    /** The microphone permission is missing: open the app to ask for it. */
+    private void askForMicrophone() {
+        toast("To translate audio, allow Screen Translator to record audio. Opening the app…");
+        Intent open = new Intent(this, MainActivity.class)
+                .setAction(MainActivity.ACTION_ASK_MICROPHONE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(open);
+        } catch (RuntimeException e) {
+            toast("Open Screen Translator and tap \"Allow listening\" under Audio translation.");
+        }
+    }
+
+    private void onAudioClip(LiveSession session, short[] pcm) {
+        if (live != session || livePanel == null || session.paused) {
+            return;
+        }
+        session.audioQueue.add(pcm);
+        sendAudio(session);
+    }
+
+    /** Sends the waiting clips (joined into one, up to the engine's limit) when the AI is free. */
+    private void sendAudio(final LiveSession session) {
+        long now = SystemClock.uptimeMillis();
+        if (live != session || livePanel == null || session.paused || session.inFlight
+                || session.audioQueue.isEmpty() || now < session.errorUntil) {
+            return;
+        }
+        // Far behind (the AI is slower than the speech): skip the oldest clips, so it stays current.
+        int skipped = 0;
+        while (session.audioQueue.size() > AUDIO_MAX_WAITING_CLIPS) {
+            skipped += session.audioQueue.remove(0).length;
+        }
+        if (skipped > 0) {
+            livePanel.addNote("The AI couldn't keep up, so " + Math.round(skipped / (double) SpeechChunker.RATE)
+                    + " seconds were skipped.");
+        }
+        final EngineSettings settings = new EngineSettings(new Prefs(this));
+        int maxSamples = (Prefs.ENGINE_ON_DEVICE.equals(settings.engine)
+                ? AUDIO_CLIP_SECONDS_ON_DEVICE : AUDIO_CLIP_SECONDS) * SpeechChunker.RATE * 3 / 2;
+        List<short[]> clips = new ArrayList<>();
+        int samples = 0;
+        while (!session.audioQueue.isEmpty()) {
+            short[] next = session.audioQueue.get(0);
+            if (!clips.isEmpty() && samples + next.length > maxSamples) {
+                break;
+            }
+            clips.add(session.audioQueue.remove(0));
+            samples += next.length;
+        }
+        session.inFlight = true;
+        session.sentAt = now;
+        session.checks++;
+        livePanel.setStatus("Translating what was said…", COLOR_BUSY);
+        memory.useLanguage(settings.language);
+        final boolean microphone = session.audioSource == AUDIO_MIC;
+        final byte[] wav = Wav.fromPcm16(Wav.join(clips), SpeechChunker.RATE);
+        final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
+                liveStatus(session), memory.copy(), session.lines.shownForAi(), null,
+                session.lines.waitForSentences ? session.lines.waitingLines() : null);
+        worker.execute(() -> {
+            List<Translation.Line> lines = null;
+            TranslateException problem = null;
+            try {
+                lines = engineFor(settings).translateSpeech(wav, request, microphone);
+            } catch (TranslateException e) {
+                problem = e;
+            } catch (RuntimeException e) {
+                problem = new TranslateException("Something went wrong: " + e.getMessage(), false);
+            }
+            final List<Translation.Line> result = lines;
+            final TranslateException failure = problem;
+            main.post(() -> onLiveResult(session, result, failure, settings.showOriginal));
+        });
+    }
+
+    /** Every tick while translating audio: finished sentences, summaries, and the mic hearing the app itself. */
+    private void tickAudio(LiveSession session, long now) {
+        if (audioListener != null) {
+            // While the app reads aloud, the microphone would hear it: count that as silence.
+            audioListener.setMuted(session.audioSource == AUDIO_MIC && speaker != null && speaker.isSpeaking());
+        }
+        if (session.inFlight || now < session.errorUntil) {
+            return;
+        }
+        // An unfinished sentence and nobody speaking for a while: it was finished after all.
+        boolean quiet = session.audioQueue.isEmpty();
+        List<Translation.Line> released = session.lines.releaseFinished(now, quiet);
+        if (!released.isEmpty()) {
+            deliver(session, released, new Prefs(this).showOriginal(), now);
+            livePanel.setStatus(watchingText(session), COLOR_WATCHING);
+        }
+        if (summaryDue(session, now)) {
+            summarizeLive(session);
+            return;
+        }
+        sendAudio(session);
+    }
+
     private void stopLive() {
+        stopListening();
         main.removeCallbacks(liveTick);
         live = null;
         if (livePanel != null) {
@@ -914,6 +1187,10 @@ public class TranslatorService extends Service {
             return;
         }
         session.paused = true;
+        if (session.audioSource != 0) {
+            stopListening();   // the microphone (or sound capture) is off while paused
+            session.audioQueue.clear();
+        }
         livePanel.setPaused(true);
         livePanel.setStatus("Paused", COLOR_PAUSED);
         if (note != null) {
@@ -936,6 +1213,9 @@ public class TranslatorService extends Service {
         session.lastError = null;
         livePanel.setPaused(false);
         livePanel.setStatus(watchingText(session), COLOR_WATCHING);
+        if (session.audioSource != 0 && !startListening(session)) {
+            return;   // (paused again, with the reason)
+        }
     }
 
     /**
@@ -951,6 +1231,10 @@ public class TranslatorService extends Service {
         long now = SystemClock.uptimeMillis();
         if (now - session.startedAt > LIVE_AUTO_PAUSE_MS) {
             pauseLive("Paused after 20 minutes to save your OpenAI credit. Tap Resume to keep going.");
+            return;
+        }
+        if (session.audioSource != 0) {
+            tickAudio(session, now);
             return;
         }
 
@@ -1093,6 +1377,9 @@ public class TranslatorService extends Service {
         }
         if (!session.paused) {
             livePanel.setStatus(watchingText(session), COLOR_WATCHING);
+        }
+        if (session.audioSource != 0) {
+            sendAudio(session);   // clips that came in meanwhile
         }
     }
 
@@ -1261,7 +1548,9 @@ public class TranslatorService extends Service {
         if (session.lines.hasWaiting()) {
             return "Waiting for the sentence to finish…";
         }
-        String text = "Watching · " + session.checks + (session.checks == 1 ? " check" : " checks");
+        String text = session.audioSource != 0
+                ? "Listening · " + session.checks + (session.checks == 1 ? " clip" : " clips")
+                : "Watching · " + session.checks + (session.checks == 1 ? " check" : " checks");
         if (session.summaryMode && !session.pending.isEmpty()) {
             text += " · " + session.pending.size() + " for the summary";
         }

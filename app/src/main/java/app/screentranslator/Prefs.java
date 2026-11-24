@@ -39,6 +39,7 @@ final class Prefs {
     private static final String KEY_OPENAI_VOICE_NAME = "openai_voice_name";
     private static final String KEY_SUMMARY = "summary_mode";
     private static final String KEY_WAIT_SENTENCES = "wait_for_sentences";
+    private static final String KEY_SELECTION_MODE = "selection_mode";
     private static final String KEY_AI_PAUSED_UNTIL = "ai_voice_paused_until";
     private static final String KEY_AI_PAUSED_FOR = "ai_voice_paused_for";
 
@@ -97,6 +98,23 @@ final class Prefs {
 
     void setLiveMode(boolean live) {
         store.edit().putBoolean(KEY_LIVE_MODE, live).apply();
+    }
+
+    static final String MODE_ONCE = "once";
+    static final String MODE_LIVE = "live";
+    static final String MODE_AUDIO = "audio";
+
+    /** Which tab was last picked on the selection screen: MODE_ONCE, MODE_LIVE or MODE_AUDIO. */
+    String selectionMode() {
+        String value = store.getString(KEY_SELECTION_MODE, liveMode() ? MODE_LIVE : MODE_ONCE);
+        if (MODE_LIVE.equals(value) || MODE_AUDIO.equals(value)) {
+            return value;
+        }
+        return MODE_ONCE;
+    }
+
+    void setSelectionMode(String mode) {
+        store.edit().putString(KEY_SELECTION_MODE, mode).putBoolean(KEY_LIVE_MODE, MODE_LIVE.equals(mode)).apply();
     }
 
     /**

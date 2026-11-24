@@ -74,6 +74,64 @@ final class Http {
         }
     }
 
+    /**
+     * POSTs a form with one file (multipart/form-data), e.g. a sound clip to transcribe.
+     * {@code fields} is name, value, name, value…; a name may repeat (e.g. "languages[]").
+     */
+    static Reply postFile(String url, String[] headers, String[] fields, String fileField, String fileName,
+                          String fileType, byte[] file) throws TranslateException {
+        String boundary = "----ScreenTranslator" + Long.toHexString(System.nanoTime());
+        java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream(file.length + 1024);
+        try {
+            for (int i = 0; i + 1 < fields.length; i += 2) {
+                body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + fields[i]
+                        + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                body.write(fields[i + 1].getBytes(StandardCharsets.UTF_8));
+                body.write("\r\n".getBytes(StandardCharsets.UTF_8));
+            }
+            body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + fileField
+                    + "\"; filename=\"" + fileName + "\"\r\nContent-Type: " + fileType + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            body.write(file);
+            body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new TranslateException("Couldn't prepare the request.", false);
+        }
+        byte[] bytes = body.toByteArray();
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(20_000);
+            connection.setReadTimeout(60_000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            for (int i = 0; i + 1 < headers.length; i += 2) {
+                connection.setRequestProperty(headers[i], headers[i + 1]);
+            }
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream out = connection.getOutputStream()) {
+                out.write(bytes);
+            }
+            int code = connection.getResponseCode();
+            InputStream in = code >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            return new Reply(code, in == null ? "" : readAll(in));
+        } catch (UnknownHostException e) {
+            throw new TranslateException("No internet connection. Check Wi-Fi or mobile data.", false);
+        } catch (SocketTimeoutException e) {
+            throw new TranslateException("The AI took too long to answer.", false);
+        } catch (IOException e) {
+            throw new TranslateException("Network problem: " + e.getMessage(), false);
+        } catch (IllegalArgumentException e) {
+            throw new TranslateException("The API key contains characters that aren't allowed. Paste it again.",
+                    true);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
     /** Receives a streamed reply one line at a time. */
     interface LineHandler {
         void onLine(String line) throws TranslateException;

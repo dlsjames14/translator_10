@@ -47,6 +47,60 @@ final class OpenAiEngine implements TranslationEngine {
         return Prompts.parseLines(content);
     }
 
+    /** OpenAI's speech-to-text model (the older whisper-1 and gpt-4o-transcribe stop in February 2027). */
+    static final String TRANSCRIBE_MODEL = "gpt-transcribe";
+    private static final String TRANSCRIBE_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions";
+
+    @Override
+    public List<Translation.Line> translateSpeech(byte[] wav, Translation.Request request, boolean microphone)
+            throws TranslateException {
+        // 1. Write down what's said (with the last words as context, for names and half sentences).
+        String transcript = transcribe(wav, speechContext(request));
+        if (!Translation.hasLetters(transcript)) {
+            return new java.util.ArrayList<>();   // nothing was said
+        }
+        // 2. Translate it as the continuation of what came before.
+        String prompt = Prompts.speechText(request.language, microphone, request.shown,
+                request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS), request.waiting);
+        return Prompts.parseLines(complete(prompt, transcript, null, true));
+    }
+
+    private String transcribe(byte[] wav, String context) throws TranslateException {
+        if (apiKey == null || apiKey.isEmpty()) {
+            throw new TranslateException("Add your OpenAI API key in the Screen Translator app first.", true);
+        }
+        String[] fields = context.isEmpty()
+                ? new String[]{"model", TRANSCRIBE_MODEL, "response_format", "json"}
+                : new String[]{"model", TRANSCRIBE_MODEL, "response_format", "json", "prompt", context};
+        Http.Reply reply = Http.postFile(TRANSCRIBE_ENDPOINT, new String[]{"Authorization", "Bearer " + apiKey},
+                fields, "file", "speech.wav", "audio/wav", wav);
+        if (reply.code == 404 || (reply.code == 400 && reply.body.contains("model"))) {
+            throw new TranslateException("OpenAI's speech-to-text model (" + TRANSCRIBE_MODEL + ") isn't "
+                    + "available to your account.", true);
+        }
+        if (!reply.ok()) {
+            throw describeError(reply);
+        }
+        try {
+            return Prompts.string(new JSONObject(reply.body), "text").trim();
+        } catch (JSONException e) {
+            throw new TranslateException("OpenAI sent a transcript this app couldn't read.", false);
+        }
+    }
+
+    /** The last words said (in the spoken language), which helps the transcription. */
+    private static String speechContext(Translation.Request request) {
+        StringBuilder context = new StringBuilder();
+        for (Translation.Line line : request.shown) {
+            context.append(line.original).append(' ');
+        }
+        for (Translation.Line line : request.waiting) {
+            context.append(line.original).append(' ');
+        }
+        String text = context.toString().trim();
+        return text.length() > 300 ? text.substring(text.length() - 300) : text;
+    }
+
     @Override
     public String summarize(String text, String earlier, Translation.Request request) throws TranslateException {
         return Prompts.cleanSummary(complete(Prompts.summarySystem(request.language),

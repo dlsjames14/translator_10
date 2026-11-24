@@ -156,6 +156,32 @@ How Live mode stays light:
 With ChatGPT, Live mode costs a few cents an hour for normal use; video with constant motion costs
 more. The on-device AI is free but uses battery while it works.
 
+**🎧 Audio: translate what's being said**
+
+1. Tap the bubble and choose the **🎧 Audio** tab (next to Once and ● Live).
+2. Choose what to listen to:
+   - **📱 Sound on this phone**: videos, YouTube, livestreams, voice messages, even without subtitles.
+   - **🎙 Microphone**: people talking near you (a conversation, a class, an announcement).
+3. The first time, Android asks whether Screen Translator may record audio. The app opens for this;
+   tap **Allow**, then go back and choose 🎧 Audio again. (You can also tap **Allow listening** under
+   **Audio translation** in the app.)
+4. The panel opens and translations appear a sentence at a time, a moment after they're spoken.
+   The same panel buttons work as in Live mode: **⏸** (stops listening), **🔊** (read the
+   translations aloud), **≡** (short summaries), **🗑**, **⇅**, **✕**.
+
+How it works: the app cuts the sound into short clips at the natural pauses between sentences and
+sends each clip to the engine you chose. **Gemini** listens to the clip itself. **ChatGPT** uses
+OpenAI's speech-to-text model (`gpt-transcribe`, about $0.0045 a minute) and then translates the text.
+The **on-device AI** (Gemma 4) listens on the phone, without internet, in a few seconds per sentence.
+Earlier sentences are given as context, and a sentence cut off at the end of a clip is joined with the
+rest from the next clip (**whole sentences**, as in Live mode).
+
+Good to know:
+- Phone calls can't be translated: Android doesn't let apps record them. Some apps also block
+  recording of their sound; they stay silent here.
+- With the microphone and 🔊 on, use headphones; the app ignores the microphone while it's speaking.
+- With Gemini, each clip is one request, so the free daily limit is used faster than in Live mode.
+
 **Memory: translations that follow the conversation**
 
 While the bubble is on, the app remembers everything it translated (original and translation). Each
@@ -298,6 +324,7 @@ arm64 code only.
 | `Speaker.java` | Reads translations aloud: the phone voice (Android text-to-speech, voice picked from the language name) or the AI voice, with automatic fallback; turns other sound down while speaking. |
 | `AiVoice.java` | The natural AI voice: streams Gemini 3.8 TTS audio (or OpenAI's, below) and plays it as it arrives (style sent separately so it isn't read aloud); the next piece is generated while the current one plays. |
 | `OpenAiSpeech.java` | The OpenAI voice: one Realtime API WebSocket session per piece (`gpt-realtime-2.1-mini`, set up as a text-to-speech reader), streaming 24 kHz PCM audio back to `AiVoice`. |
+| `AudioListener.java`, `SpeechChunker.java`, `Wav.java` | Audio translation: records the phone's sound (playback capture) or the microphone, converts it to 16 kHz mono, and cuts it into clips of speech at the pauses. |
 | `LiveLines.java` | Live mode's list of what's shown, and of unfinished sentences waiting to end (whole sentences, not pieces). |
 | `TranslationMemory.java` | Remembers what was translated (original → translation): reused for text seen before, given to the AI as context, and used to leave out text that's already shown. |
 | `Prefs.java`, `EngineSettings.java` | Saved settings, and the snapshot each translation uses. |

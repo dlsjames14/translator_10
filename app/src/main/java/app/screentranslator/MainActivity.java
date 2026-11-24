@@ -47,6 +47,9 @@ public class MainActivity extends Activity {
 
     private static final int REQUEST_CAPTURE = 1001;
     private static final int REQUEST_NOTIFICATIONS = 1002;
+    private static final int REQUEST_MICROPHONE = 1003;
+    /** Opened by the bubble when audio translation needs the microphone permission. */
+    static final String ACTION_ASK_MICROPHONE = "app.screentranslator.action.ASK_MICROPHONE";
     private static final int REQUEST_IMPORT = 1003;
     private static final String OPENAI_KEYS_URL = "https://platform.openai.com/api-keys";
     private static final String GEMINI_KEYS_URL = "https://aistudio.google.com/apikey";
@@ -94,6 +97,8 @@ public class MainActivity extends Activity {
     private CheckBox originalBox;
     private CheckBox summaryBox;
     private CheckBox waitSentencesBox;
+    private TextView audioStatus;
+    private Button audioAllowButton;
 
     // Read aloud
     private CheckBox readAloudBox;
@@ -133,6 +138,9 @@ public class MainActivity extends Activity {
         geminiModelField.setText(prefs.geminiModel());
         openAiKeyField.setText(prefs.openAiKey());
         openAiVoiceKeyField.setText(prefs.openAiKey());
+        if (ACTION_ASK_MICROPHONE.equals(getIntent().getAction())) {
+            askForMicrophone();
+        }
         linkKeyFields(openAiKeyField, openAiVoiceKeyField);   // one OpenAI key, shown in both places
         openAiModelField.setText(prefs.openAiModel());
         languageField.setText(prefs.language());
@@ -175,9 +183,19 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (ACTION_ASK_MICROPHONE.equals(intent.getAction())) {
+            askForMicrophone();
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         refreshStatus();
+        refreshAudioStatus();
         handler.post(modelTicker);
         readAloudBox.setChecked(prefs.readAloud());   // may have been switched from the Live panel
         summaryBox.setChecked(prefs.summaryMode());   // this too
@@ -307,7 +325,55 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_NOTIFICATIONS) {
             askForScreenCapture();
+        } else if (requestCode == REQUEST_MICROPHONE) {
+            refreshAudioStatus();
+            if (canRecord()) {
+                if (TranslatorService.isRunning()) {
+                    // Tell the bubble now, while the app is open (Android requires that).
+                    startService(new Intent(this, TranslatorService.class)
+                            .setAction(TranslatorService.ACTION_ALLOW_AUDIO));
+                    moveTaskToBack(true);
+                } else {
+                    Toast.makeText(this, "Listening is allowed. Tap Start, then in the bubble choose 🎧 Audio.",
+                            Toast.LENGTH_LONG).show();
+                }
+            } else if (!shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+                Toast.makeText(this, "Android won't ask again. Allow the microphone for Screen Translator in "
+                        + "Settings → Apps → Screen Translator → Permissions.", Toast.LENGTH_LONG).show();
+            }
         }
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Audio translation
+
+    private boolean canRecord() {
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void askForMicrophone() {
+        if (canRecord()) {
+            if (TranslatorService.isRunning()) {
+                startService(new Intent(this, TranslatorService.class)
+                        .setAction(TranslatorService.ACTION_ALLOW_AUDIO));
+                moveTaskToBack(true);
+            }
+            refreshAudioStatus();
+            return;
+        }
+        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_MICROPHONE);
+    }
+
+    private void refreshAudioStatus() {
+        if (audioStatus == null) {
+            return;
+        }
+        boolean allowed = canRecord();
+        audioAllowButton.setVisibility(allowed ? View.GONE : View.VISIBLE);
+        audioStatus.setText(allowed
+                ? "✓ Listening is allowed. In the bubble, choose 🎧 Audio."
+                : "Android asks once whether Screen Translator may record audio. It only listens while 🎧 Audio "
+                + "is on (you'll see the microphone dot), and the sound goes only to the AI you chose.");
     }
 
     @Override
@@ -710,6 +776,24 @@ public class MainActivity extends Activity {
                 + "has seen isn't translated again, and new text is translated as the continuation of the "
                 + "earlier lines, so conversations, videos and stories stay consistent. Tap 🗑 in the Live "
                 + "panel to start fresh."), 8, false);
+
+        // Audio translation
+        add(column, label("Audio translation"), 24, false);
+        add(column, secondary("In the bubble, choose 🎧 Audio to translate what's being said: the sound playing "
+                + "on this phone (videos, livestreams, voice messages, even without subtitles) or the microphone "
+                + "(people talking near you). It translates a sentence at a time, a moment after it's spoken, "
+                + "with the same memory, whole sentences and summaries as Live mode. Phone calls can't be "
+                + "translated: Android doesn't allow recording them."), 4, false);
+        add(column, secondary("Gemini listens itself (one request per few seconds of speech, so the free limit "
+                + "goes faster). ChatGPT uses OpenAI's speech-to-text (" + OpenAiEngine.TRANSCRIBE_MODEL
+                + ", about $0.0045 a minute) plus a translation. The on-device AI (Gemma 4) listens without "
+                + "internet; it needs a few seconds per sentence."), 6, false);
+        audioStatus = secondary("");
+        add(column, audioStatus, 8, false);
+        audioAllowButton = smallButton("Allow listening", true);
+        audioAllowButton.setOnClickListener(v -> askForMicrophone());
+        add(column, audioAllowButton, 6, false);
+        refreshAudioStatus();
 
         // Read aloud
         add(column, label("Read aloud"), 24, false);

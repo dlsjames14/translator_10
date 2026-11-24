@@ -54,6 +54,7 @@ final class LivePanel {
     private final TextView voiceChip;
     private final TextView summaryChip;
     private final TextView empty;
+    private final TextView title;
     private final LinearLayout items;
     private final ScrollView scroll;
 
@@ -83,7 +84,7 @@ final class LivePanel {
 
         LinearLayout titles = new LinearLayout(context);
         titles.setOrientation(LinearLayout.VERTICAL);
-        TextView title = new TextView(context);
+        title = new TextView(context);
         title.setText(("Live · " + language).toUpperCase(Locale.ROOT));
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         title.setTypeface(Typeface.DEFAULT_BOLD);
@@ -168,6 +169,12 @@ final class LivePanel {
         voiceChip.setContentDescription(on ? "Stop reading new lines aloud" : "Read new lines aloud");
         voiceChip.setBackground(Ui.rounded(on ? (dark ? 0x669FA8DA : 0x333949AB) : (dark ? 0x26FFFFFF : 0x12000000),
                 dp(15)));
+    }
+
+    /** For audio translation: a different title and starting text. */
+    void setAudio(String titleText, String emptyText) {
+        title.setText(titleText.toUpperCase(Locale.ROOT));
+        empty.setText(emptyText);
     }
 
     /** Shows whether summaries are on. */
