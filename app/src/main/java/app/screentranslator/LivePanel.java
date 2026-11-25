@@ -55,6 +55,7 @@ final class LivePanel {
     private final TextView summaryChip;
     private final TextView empty;
     private final TextView title;
+    private LinearLayout progress;   // the "in progress" part, kept at the bottom
     private final LinearLayout items;
     private final ScrollView scroll;
 
@@ -185,6 +186,88 @@ final class LivePanel {
         chip.setTooltipText(text);
     }
 
+    /**
+     * The greyed "in progress" part at the bottom: sentences waiting to finish (with a draft
+     * translation) and text being translated right now. Empty lists hide it.
+     */
+    void setInProgress(List<Translation.Line> waiting, List<String> reading) {
+        boolean hasWaiting = waiting != null && !waiting.isEmpty();
+        boolean hasReading = reading != null && !reading.isEmpty();
+        if (progress != null) {
+            items.removeView(progress);
+            progress = null;
+        }
+        if (!hasWaiting && !hasReading) {
+            return;
+        }
+        items.removeView(empty);
+        progress = new LinearLayout(context);
+        progress.setOrientation(LinearLayout.VERTICAL);
+        progress.setPadding(dp(10), dp(6), dp(10), dp(8));
+        progress.setBackground(Ui.rounded(dark ? 0x14FFFFFF : 0x0A000000, dp(10)));
+        int grey = dark ? 0x99FFFFFF : 0x8A000000;
+        if (hasWaiting) {
+            progress.addView(progressLabel("⏳ Waiting for the sentence to finish", grey));
+            for (Translation.Line line : waiting) {
+                if (!line.original.isEmpty()) {
+                    progress.addView(progressText(line.original + " …", 13, grey, false));
+                }
+                progress.addView(progressText(line.translation + " …", 15, grey, true));
+            }
+        }
+        if (hasReading) {
+            if (hasWaiting) {
+                View gap = new View(context);
+                progress.addView(gap, new LinearLayout.LayoutParams(1, dp(6)));
+            }
+            progress.addView(progressLabel("⏳ Translating…", grey));
+            int chars = 0;
+            for (String text : reading) {
+                if (chars > 400) {
+                    progress.addView(progressText("…", 14, grey, false));
+                    break;
+                }
+                progress.addView(progressText(text, 14, grey, false));
+                chars += text.length();
+            }
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = dp(8);
+        items.addView(progress, params);
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private TextView progressLabel(String text, int color) {
+        TextView label = new TextView(context);
+        label.setText(text);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setLetterSpacing(0.04f);
+        label.setTextColor(color);
+        return label;
+    }
+
+    private TextView progressText(String text, float sizeSp, int color, boolean italic) {
+        TextView view = new TextView(context);
+        view.setText(text);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+        view.setTextColor(color);
+        if (italic) {
+            view.setTypeface(Typeface.defaultFromStyle(Typeface.ITALIC));
+        }
+        view.setPadding(0, dp(2), 0, 0);
+        return view;
+    }
+
+    /** Keeps the "in progress" part below everything else. */
+    private void keepProgressLast() {
+        if (progress != null && items.indexOfChild(progress) != items.getChildCount() - 1) {
+            items.removeView(progress);
+            items.addView(progress);
+        }
+    }
+
     /** Shows whether summaries are on. */
     void setSummary(boolean on) {
         describe(summaryChip, on ? "Show every line" : "Show short summaries instead of every line");
@@ -276,6 +359,7 @@ final class LivePanel {
 
     void clear() {
         items.removeAllViews();
+        progress = null;
         items.addView(empty);
         scroll.scrollTo(0, 0);
     }
@@ -294,6 +378,7 @@ final class LivePanel {
     }
 
     private void trimAndScroll() {
+        keepProgressLast();
         while (items.getChildCount() > MAX_ITEMS) {
             items.removeViewAt(0);
         }

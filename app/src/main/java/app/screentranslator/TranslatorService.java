@@ -56,6 +56,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -123,6 +124,7 @@ public class TranslatorService extends Service {
         LiveLines lines;      // what the panel shows, and sentences waiting to finish
         int audioSource;      // 0 for watching the screen; AUDIO_PHONE or AUDIO_MIC for audio translation
         final List<short[]> audioQueue = new ArrayList<>();   // clips of speech waiting to be translated
+        final List<String> reading = new ArrayList<>();       // text being translated right now (shown greyed)
         boolean summaryMode;
         final List<Translation.Line> pending = new ArrayList<>();               // waiting to be summarized
         final ArrayDeque<String> summaries = new ArrayDeque<>();
@@ -154,6 +156,9 @@ public class TranslatorService extends Service {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // Reads the screenshot's text on the phone, to show it while Gemini or ChatGPT translate it.
+    private final ExecutorService previewWorker = Executors.newSingleThreadExecutor();
+    private final ScreenText previewReader = new ScreenText();
     // The translation engine. Used only on the worker thread.
     private TranslationEngine engine;
     private String engineIdentity;
@@ -190,6 +195,8 @@ public class TranslatorService extends Service {
     private String cardSummary;        // its short summary, once made
     private boolean cardShowingSummary;
     private boolean cardSummarizing;
+    private String cardProgressMessage;   // while translating: the engine's latest message…
+    private List<String> cardReading;     // …and the text it's translating (shown greyed)
 
     // Reading aloud
     private Speaker speaker;
@@ -250,6 +257,8 @@ public class TranslatorService extends Service {
         releaseSpeaker();
         worker.execute(this::closeEngine);   // frees the on-device AI's memory
         worker.shutdown();
+        previewWorker.execute(previewReader::close);
+        previewWorker.shutdown();
         super.onDestroy();
     }
 
@@ -763,9 +772,13 @@ public class TranslatorService extends Service {
         final EngineSettings settings = new EngineSettings(prefs);
         cardSettings = settings;
         cardShowOriginal = settings.showOriginal;
+        cardProgressMessage = null;
+        cardReading = null;
         memory.useLanguage(settings.language);
         final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
                 cardStatus(id), memory.copy(), null, null, null);
+        request.reading = texts -> main.post(() -> showCardReading(id, texts));
+        final CountDownLatch previewDone = startPreview(shot, settings, request.reading);
         worker.execute(() -> {
             String text;
             boolean ok;
@@ -788,6 +801,7 @@ public class TranslatorService extends Service {
                 text = "Something went wrong: " + e.getMessage();
                 ok = false;
             } finally {
+                awaitQuietly(previewDone);
                 shot.recycle();
             }
             final String result = text;
@@ -802,11 +816,48 @@ public class TranslatorService extends Service {
         });
     }
 
+    /** While translating: the text found on screen, greyed, under the progress message. */
+    private void showCardReading(int id, List<String> texts) {
+        if (id != requestId || card == null || cardFullText != null || texts.isEmpty()) {
+            return;
+        }
+        cardReading = new ArrayList<>(texts);
+        showCardProgress();
+    }
+
+    private void showCardProgress() {
+        if (card == null || cardBody == null) {
+            return;
+        }
+        String message = cardProgressMessage == null ? "Translating…" : cardProgressMessage;
+        if (cardReading == null || cardReading.isEmpty()) {
+            cardBody.setText(message);
+            return;
+        }
+        android.text.SpannableStringBuilder body = new android.text.SpannableStringBuilder(message + "\n\n");
+        int start = body.length();
+        int chars = 0;
+        for (String text : cardReading) {
+            if (chars > 600) {
+                body.append("…");
+                break;
+            }
+            body.append(text).append("\n");
+            chars += text.length();
+        }
+        body.setSpan(new android.text.style.ForegroundColorSpan(Ui.isDark(ui) ? 0x99FFFFFF : 0x8A000000),
+                start, body.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        body.setSpan(new android.text.style.RelativeSizeSpan(0.9f), start, body.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        cardBody.setText(body);
+    }
+
     /** Shows the engine's progress messages on the card while it's working. */
     private Translation.StatusListener cardStatus(int id) {
         return message -> main.post(() -> {
-            if (id == requestId && card != null && cardBody != null) {
-                cardBody.setText(message);
+            if (id == requestId && card != null && cardBody != null && cardFullText == null) {
+                cardProgressMessage = message;
+                showCardProgress();
             }
         });
     }
@@ -938,6 +989,7 @@ public class TranslatorService extends Service {
                 if (live != null) {
                     live.pending.clear();
                     live.summaries.clear();
+                    live.reading.clear();
                     live.lines.forgetOlder(5);   // keep only what's probably still on screen
                 }
             }
@@ -1143,6 +1195,7 @@ public class TranslatorService extends Service {
         final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
                 liveStatus(session), memory.copy(), session.lines.shownForAi(), null,
                 session.lines.waitForSentences ? session.lines.waitingLines() : null);
+        request.reading = texts -> main.post(() -> showReading(session, texts));
         worker.execute(() -> {
             List<Translation.Line> lines = null;
             TranslateException problem = null;
@@ -1172,6 +1225,7 @@ public class TranslatorService extends Service {
         boolean quiet = session.audioQueue.isEmpty();
         List<Translation.Line> released = session.lines.releaseFinished(now, quiet);
         if (!released.isEmpty()) {
+            showProgress(session);
             deliver(session, released, new Prefs(this).showOriginal(), now);
             livePanel.setStatus(watchingText(session), COLOR_WATCHING);
         }
@@ -1320,6 +1374,8 @@ public class TranslatorService extends Service {
         final Translation.Request request = new Translation.Request(settings.language, settings.showOriginal,
                 liveStatus(session), memory.copy(), session.lines.shownForAi(), session.lines.shownKeys(),
                 session.lines.waitForSentences ? session.lines.waitingLines() : null);
+        request.reading = texts -> main.post(() -> showReading(session, texts));
+        final CountDownLatch previewDone = startPreview(shot, settings, request.reading);
         worker.execute(() -> {
             List<Translation.Line> lines = null;
             TranslateException problem = null;
@@ -1330,12 +1386,86 @@ public class TranslatorService extends Service {
             } catch (RuntimeException e) {
                 problem = new TranslateException("Something went wrong: " + e.getMessage(), false);
             } finally {
+                awaitQuietly(previewDone);   // the preview may still be reading the same screenshot
                 shot.recycle();
             }
             final List<Translation.Line> result = lines;
             final TranslateException failure = problem;
             main.post(() -> onLiveResult(session, result, failure, settings.showOriginal));
         });
+    }
+
+    /**
+     * With Gemini or ChatGPT, reads the screenshot's text on the phone meanwhile (a fraction of a
+     * second), so it can be shown while the AI translates it. The on-device engine reads the text
+     * itself and reports it. Returns when the screenshot is free again (null if no preview runs).
+     */
+    private CountDownLatch startPreview(final Bitmap shot, EngineSettings settings, Translation.Reading reading) {
+        if (Prefs.ENGINE_ON_DEVICE.equals(settings.engine)) {
+            return null;
+        }
+        final CountDownLatch done = new CountDownLatch(1);
+        try {
+            previewWorker.execute(() -> {
+                try {
+                    List<String> texts = previewReader.read(shot);
+                    if (!texts.isEmpty()) {
+                        reading.onReading(texts);
+                    }
+                } catch (TranslateException | RuntimeException | LinkageError ignored) {
+                    // Only a preview: the translation itself doesn't depend on it.
+                } finally {
+                    done.countDown();
+                }
+            });
+        } catch (RuntimeException e) {
+            return null;   // (shutting down)
+        }
+        return done;
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        if (latch == null) {
+            return;
+        }
+        try {
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** The text being translated right now, shown greyed in the panel until the translation arrives. */
+    private void showReading(LiveSession session, List<String> texts) {
+        if (live != session || livePanel == null || !session.inFlight) {
+            return;   // (the translation already arrived)
+        }
+        session.reading.clear();
+        for (String text : texts) {
+            String key = Translation.normalize(text);
+            if (key.isEmpty() || (session.audioSource == 0 && session.lines.alreadyShown(key))) {
+                continue;   // already translated above
+            }
+            boolean waiting = false;
+            for (Translation.Line line : session.lines.waitingLines()) {
+                if (TranslationMemory.coveredBy(key, Translation.normalize(line.original))) {
+                    waiting = true;   // shown with its draft translation already
+                }
+            }
+            if (!waiting) {
+                session.reading.add(text);
+            }
+        }
+        showProgress(session);
+    }
+
+    /** Updates the greyed "in progress" part: sentences waiting to finish, and text being translated. */
+    private void showProgress(LiveSession session) {
+        if (livePanel == null || live != session) {
+            return;
+        }
+        livePanel.setInProgress(session.lines.waitForSentences && !session.summaryMode
+                ? session.lines.waitingLines() : null, session.reading);
     }
 
     private Translation.StatusListener liveStatus(LiveSession session) {
@@ -1352,6 +1482,8 @@ public class TranslatorService extends Service {
             return;   // Live was stopped or restarted meanwhile
         }
         session.inFlight = false;
+        session.reading.clear();
+        showProgress(session);
         long now = SystemClock.uptimeMillis();
 
         if (failure != null) {
@@ -1383,6 +1515,7 @@ public class TranslatorService extends Service {
         if (session.lines.hasWaiting()) {
             session.interval = session.minInterval;   // keep an eye on the sentence that's being finished
         }
+        showProgress(session);
         session.nextAllowedAt = session.sentAt + session.interval;
         if (summaryDue(session, now) && !session.paused) {
             summarizeLive(session);
@@ -1433,6 +1566,7 @@ public class TranslatorService extends Service {
                 && !isChange(countChanged(session.sentSig, session.currentSig), session.currentSig.length);
         List<Translation.Line> released = session.lines.releaseFinished(now, screenStill);
         if (!released.isEmpty()) {
+            showProgress(session);
             deliver(session, released, new Prefs(this).showOriginal(), now);
             if (!session.paused) {
                 livePanel.setStatus(watchingText(session), COLOR_WATCHING);
@@ -2063,6 +2197,7 @@ public class TranslatorService extends Service {
         }
         boolean hasText = success && !Translation.NO_TEXT.equals(text.trim());
         cardFullText = hasText ? text : null;
+        cardReading = null;
         cardSummary = null;
         cardSummarizing = false;
         cardCopy.setVisibility(success ? View.VISIBLE : View.GONE);
@@ -2092,11 +2227,50 @@ public class TranslatorService extends Service {
             return;
         }
         cardTitle.setText(cardLanguage.toUpperCase(Locale.ROOT));
-        cardBody.setText(cardFullText);
+        cardBody.setText(cardShowOriginal ? styledPairs(cardFullText) : cardFullText);
         cardSpokenText = Speaker.translationsOnly(cardFullText, cardShowOriginal);
         cardSummaryChip.setText("Summary");
         cardSummaryChip.setContentDescription("Show a short summary");
         updateSpeakChip();
+    }
+
+    /**
+     * "Original / → translation" blocks, shown as the original (small, grey) with the translation
+     * under it. Text without that shape is shown as it is.
+     */
+    private CharSequence styledPairs(String text) {
+        if (!text.contains("→")) {
+            return text;
+        }
+        android.text.SpannableStringBuilder out = new android.text.SpannableStringBuilder();
+        int grey = Ui.isDark(ui) ? 0x99FFFFFF : 0x8A000000;
+        for (String block : text.trim().split("\\n\\s*\\n")) {
+            if (out.length() > 0) {
+                out.append("\n\n");
+            }
+            boolean first = true;
+            for (String raw : block.split("\n")) {
+                String row = raw.trim();
+                if (row.isEmpty()) {
+                    continue;
+                }
+                if (!first) {
+                    out.append('\n');
+                }
+                first = false;
+                if (row.startsWith("→")) {
+                    out.append(row.substring(1).trim());
+                } else {
+                    int start = out.length();
+                    out.append(row);
+                    out.setSpan(new android.text.style.ForegroundColorSpan(grey), start, out.length(),
+                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    out.setSpan(new android.text.style.RelativeSizeSpan(0.85f), start, out.length(),
+                            android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            }
+        }
+        return out;
     }
 
     /** Shows the summary, making it first if needed. */

@@ -42,6 +42,7 @@ final class Prefs {
     private static final String KEY_SELECTION_MODE = "selection_mode";
     private static final String KEY_WELCOME_DONE = "welcome_done";
     private static final String KEY_BUBBLE_TIP_SHOWN = "bubble_tip_shown";
+    private static final String KEY_ORIGINAL_ON = "original_on_by_default";
     private static final String KEY_AI_PAUSED_UNTIL = "ai_voice_paused_until";
     private static final String KEY_AI_PAUSED_FOR = "ai_voice_paused_for";
 
@@ -89,8 +90,14 @@ final class Prefs {
         return orDefault(store.getString(KEY_LANGUAGE, ""), DEFAULT_LANGUAGE);
     }
 
+    /** Show the original text above each translation. On unless turned off (since version 2.10). */
     boolean showOriginal() {
-        return store.getBoolean(KEY_SHOW_ORIGINAL, false);
+        if (!store.getBoolean(KEY_ORIGINAL_ON, false)) {
+            // Shown by default from 2.10 on, also for people who had it off before.
+            store.edit().putBoolean(KEY_SHOW_ORIGINAL, true).putBoolean(KEY_ORIGINAL_ON, true).apply();
+            return true;
+        }
+        return store.getBoolean(KEY_SHOW_ORIGINAL, true);
     }
 
     /** Which tab was last picked on the selection screen: "Translate once" or "Live". */

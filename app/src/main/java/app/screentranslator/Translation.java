@@ -83,6 +83,8 @@ final class Translation {
         final List<Line> waiting;
         /** Live mode: wait for sentences to finish (the AI says which ones are unfinished). */
         final boolean waitForSentences;
+        /** Told the original text as soon as it's known, before the translation (to show it in progress). */
+        Reading reading = originals -> { };
 
         Request(String language, boolean showOriginal, StatusListener status) {
             this(language, showOriginal, status, null, null, null, null);
@@ -104,6 +106,11 @@ final class Translation {
         List<TranslationMemory.Entry> history(int maxItems, int maxChars) {
             return memory.recent(maxItems, maxChars, HISTORY_MAX_AGE_MS, shownKeys);
         }
+    }
+
+    /** Receives the text being translated, before its translation is ready. Called on the background thread. */
+    interface Reading {
+        void onReading(List<String> originals);
     }
 
     /** Earlier translations older than this aren't used as context (probably a different app or video). */

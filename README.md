@@ -193,6 +193,18 @@ Good to know:
 - With the microphone and 🔊 on, use headphones; the app ignores the microphone while it's speaking.
 - With Gemini, each clip is one request, so the free daily limit is used faster than in Live mode.
 
+**Seeing what's being translated**
+
+- Every translation shows its **original text** (small and grey) above it, in the Live panel and on
+  the translation card. Turn this off under **Language → Also show the original text**.
+- While the AI is working, the bottom of the Live panel shows the words it's translating, greyed,
+  under **⏳ Translating…**, and the card shows them under its progress message. With Gemini and
+  ChatGPT, the app reads the text on the phone first (a fraction of a second) so it can show it
+  straight away. In 🎧 Audio with ChatGPT, the words that were heard appear as soon as they're
+  written down.
+- A sentence that's still being typed or spoken appears greyed under **⏳ Waiting for the sentence to
+  finish**, with a draft translation, until it's complete.
+
 **Memory: translations that follow the conversation**
 
 While the bubble is on, the app remembers everything it translated (original and translation). Each
@@ -346,6 +358,7 @@ arm64 code only.
 | `Speaker.java` | Reads translations aloud: the phone voice (Android text-to-speech, voice picked from the language name) or the AI voice, with automatic fallback; turns other sound down while speaking. |
 | `AiVoice.java` | The natural AI voice: streams Gemini 3.8 TTS audio (or OpenAI's, below) and plays it as it arrives (style sent separately so it isn't read aloud); the next piece is generated while the current one plays. |
 | `OpenAiSpeech.java` | The OpenAI voice: one Realtime API WebSocket session per piece (`gpt-realtime-2.1-mini`, set up as a text-to-speech reader), streaming 24 kHz PCM audio back to `AiVoice`. |
+| `ScreenText.java` | Reads the text in a screenshot on the phone (ML Kit): for the on-device engine, and to show text in progress with Gemini and ChatGPT. |
 | `AudioListener.java`, `SpeechChunker.java`, `Wav.java` | Audio translation: records the phone's sound (playback capture) or the microphone, converts it to 16 kHz mono, and cuts it into clips of speech at the pauses. |
 | `LiveLines.java` | Live mode's list of what's shown, and of unfinished sentences waiting to end (whole sentences, not pieces). |
 | `TranslationMemory.java` | Remembers what was translated (original → translation): reused for text seen before, given to the AI as context, and used to leave out text that's already shown. |

@@ -59,6 +59,7 @@ final class OpenAiEngine implements TranslationEngine {
         if (!Translation.hasLetters(transcript)) {
             return new java.util.ArrayList<>();   // nothing was said
         }
+        request.reading.onReading(java.util.Collections.singletonList(transcript));   // shown while translating
         // 2. Translate it as the continuation of what came before.
         String prompt = Prompts.speechText(request.language, microphone, request.shown,
                 request.history(Prompts.ONLINE_HISTORY_ITEMS, Prompts.ONLINE_HISTORY_CHARS), request.waiting);

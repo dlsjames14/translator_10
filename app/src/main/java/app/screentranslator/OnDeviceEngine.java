@@ -2,7 +2,6 @@ package app.screentranslator;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.Rect;
 
 import com.google.ai.edge.litertlm.Backend;
 import com.google.ai.edge.litertlm.Content;
@@ -13,12 +12,6 @@ import com.google.ai.edge.litertlm.Engine;
 import com.google.ai.edge.litertlm.EngineConfig;
 import com.google.ai.edge.litertlm.Message;
 import com.google.ai.edge.litertlm.SamplerConfig;
-import com.google.android.gms.tasks.Tasks;
-import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.Text;
-import com.google.mlkit.vision.text.TextRecognition;
-import com.google.mlkit.vision.text.TextRecognizer;
-import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -27,7 +20,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Translation that runs entirely on the phone, free and offline:
@@ -48,7 +40,7 @@ final class OnDeviceEngine implements TranslationEngine {
 
     private final Context context;
     private final ModelStore.Spec spec;
-    private TextRecognizer recognizer;
+    private final ScreenText screenText = new ScreenText();
     private Engine engine;
     private boolean engineCanListen;   // started with its audio part (for audio translation)
     private String backendName = "";
@@ -64,6 +56,7 @@ final class OnDeviceEngine implements TranslationEngine {
         if (blocks.isEmpty()) {
             return new Translation.Result(Translation.NO_TEXT, null);
         }
+        request.reading.onReading(blocks);   // shown while Gemma translates
         String[] translations = translateNew(blocks, Collections.<String>emptyList(), request);
         StringBuilder out = new StringBuilder();
         List<Translation.Line> lines = new ArrayList<>();
@@ -113,6 +106,7 @@ final class OnDeviceEngine implements TranslationEngine {
         if (fresh.isEmpty()) {
             return lines;   // nothing new on screen: no need to run the AI at all
         }
+        request.reading.onReading(fresh);   // shown while Gemma translates
         // Step 2: translate what's new (reusing earlier translations of the same text).
         String[] translations = translateNew(fresh, alreadyShown, request);
         for (int i = 0; i < fresh.size(); i++) {
@@ -215,56 +209,15 @@ final class OnDeviceEngine implements TranslationEngine {
             engine = null;
             engineCanListen = false;
         }
-        if (recognizer != null) {
-            try {
-                recognizer.close();
-            } catch (Exception ignored) {
-                // Already closed.
-            }
-            recognizer = null;
-        }
+        screenText.close();
     }
 
     // ----------------------------------------------------------------------------------------
     // Step 1: read the text
 
-    /** Text blocks in reading order, each block's lines joined into one string. */
+    /** Text blocks in reading order (ML Kit, on the phone). */
     private List<String> readText(Bitmap image) throws TranslateException {
-        if (recognizer == null) {
-            recognizer = TextRecognition.getClient(new KoreanTextRecognizerOptions.Builder().build());
-        }
-        Text result;
-        try {
-            result = Tasks.await(recognizer.process(InputImage.fromBitmap(image, 0)), 30, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            throw new TranslateException("Couldn't read the text on the screen (" + e.getMessage() + ").", false);
-        }
-        List<Text.TextBlock> found = new ArrayList<>(result.getTextBlocks());
-        Collections.sort(found, (a, b) -> {
-            Rect boxA = a.getBoundingBox();
-            Rect boxB = b.getBoundingBox();
-            int topA = boxA == null ? 0 : boxA.top;
-            int topB = boxB == null ? 0 : boxB.top;
-            if (topA != topB) {
-                return Integer.compare(topA, topB);
-            }
-            return Integer.compare(boxA == null ? 0 : boxA.left, boxB == null ? 0 : boxB.left);
-        });
-        List<String> blocks = new ArrayList<>();
-        for (Text.TextBlock block : found) {
-            StringBuilder joined = new StringBuilder();
-            for (Text.Line line : block.getLines()) {
-                if (joined.length() > 0) {
-                    joined.append(' ');
-                }
-                joined.append(line.getText().trim());
-            }
-            String text = joined.toString().trim();
-            if (Translation.hasLetters(text)) {
-                blocks.add(text);
-            }
-        }
-        return blocks;
+        return screenText.read(image);
     }
 
     // ----------------------------------------------------------------------------------------

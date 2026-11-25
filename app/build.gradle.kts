@@ -11,8 +11,8 @@ android {
         applicationId = "app.screentranslator"
         minSdk = 31          // Android 12+, required by the on-device AI library
         targetSdk = 35
-        versionCode = 13
-        versionName = "2.9.1"
+        versionCode = 14
+        versionName = "2.10"
         ndk {
             abiFilters += "arm64-v8a"   // all Android 12+ phones; keeps the APK small
         }
