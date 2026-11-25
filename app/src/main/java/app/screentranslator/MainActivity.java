@@ -48,11 +48,12 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CAPTURE = 1001;
     private static final int REQUEST_NOTIFICATIONS = 1002;
     private static final int REQUEST_MICROPHONE = 1003;
+    private static final int REQUEST_WELCOME = 1004;
     /** Opened by the bubble when audio translation needs the microphone permission. */
     static final String ACTION_ASK_MICROPHONE = "app.screentranslator.action.ASK_MICROPHONE";
     private static final int REQUEST_IMPORT = 1003;
-    private static final String OPENAI_KEYS_URL = "https://platform.openai.com/api-keys";
-    private static final String GEMINI_KEYS_URL = "https://aistudio.google.com/apikey";
+    static final String OPENAI_KEYS_URL = "https://platform.openai.com/api-keys";
+    static final String GEMINI_KEYS_URL = "https://aistudio.google.com/apikey";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable modelTicker = new Runnable() {
@@ -60,6 +61,10 @@ public class MainActivity extends Activity {
         public void run() {
             refreshModelStatus();
             refreshVoiceStatus();
+            refreshChecklist();
+            if (Prefs.ENGINE_ON_DEVICE.equals(prefs.engine())) {
+                refreshSections();
+            }
             handler.postDelayed(this, 1000);
         }
     };
@@ -97,6 +102,16 @@ public class MainActivity extends Activity {
     private CheckBox originalBox;
     private CheckBox summaryBox;
     private CheckBox waitSentencesBox;
+    private ScrollView scroll;
+    private Button startButton;
+    private LinearLayout checklist;
+    private String checklistState;
+    private Spinner languageList;
+    private final LinearLayout[] sectionBodies = new LinearLayout[5];
+    private final TextView[] sectionSummaries = new TextView[5];
+    private final TextView[] sectionArrows = new TextView[5];
+    private TextView geminiKeyNote;
+    private TextView openAiKeyNote;
     private TextView audioStatus;
     private Button audioAllowButton;
 
@@ -120,6 +135,7 @@ public class MainActivity extends Activity {
     private Spinner openAiVoiceSpinner;
     private Spinner openAiMoodSpinner;
     private boolean syncingKeys;
+    private boolean loading;   // filling in the saved settings: don't save while doing so
     private TextView aiVoiceStatus;
     private TextView statusView;
     private Button stopButton;
@@ -132,18 +148,32 @@ public class MainActivity extends Activity {
         drawBehindSystemBars();
         setContentView(buildScreen());
 
-        geminiKeyField.setText(prefs.geminiKey());
-        voiceKeyField.setText(prefs.geminiKey());
+        loading = true;
         linkKeyFields(geminiKeyField, voiceKeyField);   // one Gemini key, shown in both places
-        geminiModelField.setText(prefs.geminiModel());
-        openAiKeyField.setText(prefs.openAiKey());
-        openAiVoiceKeyField.setText(prefs.openAiKey());
+        linkKeyFields(openAiKeyField, openAiVoiceKeyField);   // one OpenAI key, shown in both places
+        loadFields();
+        loading = false;
+        refreshSections();
+        refreshChecklist();
+
         if (ACTION_ASK_MICROPHONE.equals(getIntent().getAction())) {
             askForMicrophone();
+        } else if (savedInstanceState == null && !prefs.welcomeDone()) {
+            if (isNewUser()) {
+                openWelcome();   // first run: the step-by-step setup guide
+            } else {
+                prefs.setWelcomeDone();   // already set up in an earlier version
+            }
         }
-        linkKeyFields(openAiKeyField, openAiVoiceKeyField);   // one OpenAI key, shown in both places
+    }
+
+    /** Shows the saved settings on the screen. */
+    private void loadFields() {
+        geminiKeyField.setText(prefs.geminiKey());
+        geminiModelField.setText(prefs.geminiModel());
+        openAiKeyField.setText(prefs.openAiKey());
         openAiModelField.setText(prefs.openAiModel());
-        languageField.setText(prefs.language());
+        showLanguage(prefs.language());
         originalBox.setChecked(prefs.showOriginal());
         switch (prefs.speechRate()) {
             case Speaker.RATE_SLOW:
@@ -180,6 +210,8 @@ public class MainActivity extends Activity {
                 onDeviceOption.setChecked(true);
         }
         showEnginePanel();
+        showKeyNote(Prefs.ENGINE_GEMINI);
+        showKeyNote(Prefs.ENGINE_OPENAI);
     }
 
     @Override
@@ -196,6 +228,9 @@ public class MainActivity extends Activity {
         super.onResume();
         refreshStatus();
         refreshAudioStatus();
+        checklistState = null;   // permissions may have changed in Android's settings
+        refreshChecklist();
+        refreshSections();
         handler.post(modelTicker);
         readAloudBox.setChecked(prefs.readAloud());   // may have been switched from the Live panel
         summaryBox.setChecked(prefs.summaryMode());   // this too
@@ -241,7 +276,9 @@ public class MainActivity extends Activity {
                     .setTitle("Allow the floating bubble")
                     .setMessage("Screen Translator needs permission to appear on top of other apps, "
                             + "so the bubble and translations can show over any app.\n\n"
-                            + "On the next screen, turn on \"Allow display over other apps\", then come back.")
+                            + "On the next screen, turn on \"Allow display over other apps\", then come back.\n\n"
+                            + "If the switch is greyed out: open Settings → Apps → Screen Translator, tap ⋮ (top "
+                            + "right) → \"Allow restricted settings\", then try again.")
                     .setPositiveButton("Open settings", (dialog, which) -> openOverlaySettings())
                     .setNegativeButton("Cancel", null)
                     .show();
@@ -255,6 +292,8 @@ public class MainActivity extends Activity {
         switch (prefs.engine()) {
             case Prefs.ENGINE_GEMINI:
                 if (prefs.geminiKey().isEmpty()) {
+                    showSection(0);
+                    Toast.makeText(this, "First add your free Gemini key (steps on screen).", Toast.LENGTH_LONG).show();
                     geminiKeyField.setError("Paste your free Gemini API key first");
                     geminiKeyField.requestFocus();
                     return false;
@@ -262,6 +301,8 @@ public class MainActivity extends Activity {
                 return true;
             case Prefs.ENGINE_OPENAI:
                 if (prefs.openAiKey().isEmpty()) {
+                    showSection(0);
+                    Toast.makeText(this, "First add your OpenAI key (steps on screen).", Toast.LENGTH_LONG).show();
                     openAiKeyField.setError("Paste your OpenAI API key first");
                     openAiKeyField.requestFocus();
                     return false;
@@ -273,6 +314,7 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (ModelStore.progress(this, spec) != null) {
+                    showSection(0);
                     Toast.makeText(this, "The AI model is still downloading. Start again when it's ready.",
                             Toast.LENGTH_LONG).show();
                     return false;
@@ -299,7 +341,14 @@ public class MainActivity extends Activity {
     }
 
     private void openOverlaySettings() {
-        waitingForOverlayPermission = true;
+        openOverlaySettings(true);
+    }
+
+    /** @param thenStart continue starting the bubble when the person comes back with the permission */
+    private void openOverlaySettings(boolean thenStart) {
+        waitingForOverlayPermission = thenStart;
+        Toast.makeText(this, "Find Screen Translator and turn on \"Allow display over other apps\", then come back.",
+                Toast.LENGTH_LONG).show();
         Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
         try {
             startActivity(intent);
@@ -379,6 +428,19 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_WELCOME) {
+            loading = true;
+            loadFields();
+            loading = false;
+            checklistState = null;
+            refreshChecklist();
+            refreshSections();
+            refreshStatus();
+            if (data != null && data.getBooleanExtra(WelcomeActivity.EXTRA_START_NOW, false)) {
+                onStartTapped();
+            }
+            return;
+        }
         if (requestCode == REQUEST_IMPORT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 importModel(data.getData());
@@ -413,25 +475,27 @@ public class MainActivity extends Activity {
         }
         prefs.saveFields(openAiKeyField.getText().toString(), openAiModelField.getText().toString(),
                 geminiKeyField.getText().toString(), geminiModelField.getText().toString(),
-                languageField.getText().toString(), originalBox.isChecked(), mobileDataBox.isChecked());
+                currentLanguage(), originalBox.isChecked(), mobileDataBox.isChecked());
     }
 
     private void refreshStatus() {
         boolean running = TranslatorService.isRunning();
         if (running) {
-            statusView.setText("● Running with " + engineName() + ". Tap the bubble on your screen to translate. "
-                    + "(Changing the engine here takes effect on the next translation.)");
+            statusView.setText("● The bubble is on, using " + engineName() + ". Open any app and tap the "
+                    + "bubble to translate. Changes here apply to the next translation.");
             statusView.setTextColor(Ui.isDark(this) ? Ui.ACCENT_ON_DARK : Ui.ACCENT);
         } else if (!Settings.canDrawOverlays(this)) {
-            statusView.setText("Tap Start. Android will ask you to let Screen Translator appear on top of "
-                    + "other apps, then to allow screen capture.");
+            statusView.setText("Tap Start. Android will ask you to let the bubble show over other apps, then to "
+                    + "share your screen with the app: allow both.");
             statusView.setTextColor(secondaryTextColor());
         } else {
-            statusView.setText("Ready. Tap Start and allow screen capture.");
+            statusView.setText("Tap Start, then allow screen sharing when Android asks.");
             statusView.setTextColor(secondaryTextColor());
         }
-        stopButton.setEnabled(running);
-        stopButton.setAlpha(running ? 1f : 0.45f);
+        if (startButton != null) {
+            startButton.setText(running ? "↗  Go to my apps" : "▶  Start translator bubble");
+        }
+        stopButton.setVisibility(running ? View.VISIBLE : View.GONE);
     }
 
     private String engineName() {
@@ -452,6 +516,8 @@ public class MainActivity extends Activity {
         prefs.setEngine(engine);
         showEnginePanel();
         refreshStatus();
+        refreshSections();
+        refreshChecklist();
     }
 
     private void showEnginePanel() {
@@ -686,7 +752,7 @@ public class MainActivity extends Activity {
     }
 
     private View buildScreen() {
-        ScrollView scroll = new ScrollView(this);
+        scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
         scroll.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -703,109 +769,157 @@ public class MainActivity extends Activity {
 
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
-        int pad = Ui.dp(this, 22);
-        column.setPadding(pad, pad, pad, pad);
+        int pad = Ui.dp(this, 18);
+        column.setPadding(pad, pad, pad, Ui.dp(this, 28));
         scroll.addView(column, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // ---- Top: what it is, and the big Start button ----
         TextView title = text("Screen Translator", 28);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        column.addView(title);
-        add(column, secondary("Translate any text on your screen. Tap the floating bubble, then drag a box "
-                + "over the text, or tap once to translate the whole screen. Switch to Live on that screen to "
-                + "keep translating new text as it appears."), 6, false);
+        add(column, title, 4, false);
+        add(column, secondary("Tap the floating bubble in any app to translate what's on screen, keep "
+                + "translating with ● Live, or translate speech with 🎧 Audio."), 4, false);
 
-        // Engine choice
-        add(column, label("Translation engine"), 28, false);
+        statusView = text("", 15);
+        statusView.setLineSpacing(0, 1.15f);
+        add(column, statusView, 16, false);
+
+        Button start = new Button(this);
+        start.setText("▶  Start translator bubble");
+        start.setAllCaps(false);
+        start.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        start.setTypeface(Typeface.DEFAULT_BOLD);
+        start.setTextColor(Color.WHITE);
+        start.setBackgroundTintList(ColorStateList.valueOf(Ui.ACCENT));
+        start.setMinHeight(Ui.dp(this, 60));
+        start.setOnClickListener(v -> onStartTapped());
+        startButton = start;
+        add(column, start, 10, true);
+
+        stopButton = new Button(this);
+        stopButton.setText("■  Stop translator");
+        stopButton.setAllCaps(false);
+        stopButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        stopButton.setOnClickListener(v -> onStopTapped());
+        add(column, stopButton, 4, true);
+
+        // ---- Setup checklist ----
+        checklist = card();
+        add(column, checklist, 16, true);
+
+        // ---- 1. How to translate ----
+        LinearLayout engineBody = section(column, "🧠", "How to translate", 0);
         RadioGroup engines = new RadioGroup(this);
-        onDeviceOption = option("On-device AI (Gemma 4)");
-        geminiOption = option("Gemini (Google)");
-        openAiOption = option("ChatGPT (OpenAI)");
-        engines.addView(onDeviceOption);
-        engines.addView(optionNote("Free and private. Works without internet after a one-time download."));
+        geminiOption = option("✨  Gemini (Google)  ·  recommended");
+        onDeviceOption = option("📱  On this phone (Gemma 4)");
+        openAiOption = option("💬  ChatGPT (OpenAI)");
         engines.addView(geminiOption);
-        engines.addView(optionNote("Free tier with daily limits. Needs internet and a free Google key."));
+        engines.addView(optionNote("Free, fast and very good. Needs internet and a free Google key."));
+        engines.addView(onDeviceOption);
+        engines.addView(optionNote("Free and private, works without internet. One-time "
+                + ModelStore.E2B.sizeText() + " download; needs a newer phone."));
         engines.addView(openAiOption);
-        engines.addView(optionNote("Paid per use. Needs internet and an OpenAI key."));
+        engines.addView(optionNote("Very good, paid per use (a fraction of a cent each). Needs an OpenAI key "
+                + "with credit."));
         onDeviceOption.setOnClickListener(v -> onEngineChosen(Prefs.ENGINE_ON_DEVICE));
         geminiOption.setOnClickListener(v -> onEngineChosen(Prefs.ENGINE_GEMINI));
         openAiOption.setOnClickListener(v -> onEngineChosen(Prefs.ENGINE_OPENAI));
-        add(column, engines, 4, true);
+        add(engineBody, engines, 0, true);
 
         onDevicePanel = panel();
         buildOnDevicePanel(onDevicePanel);
-        add(column, onDevicePanel, 12, true);
+        add(engineBody, onDevicePanel, 10, true);
 
         geminiPanel = panel();
         buildGeminiPanel(geminiPanel);
-        add(column, geminiPanel, 12, true);
+        add(engineBody, geminiPanel, 10, true);
 
         openAiPanel = panel();
         buildOpenAiPanel(openAiPanel);
-        add(column, openAiPanel, 12, true);
+        add(engineBody, openAiPanel, 10, true);
 
-        // Common settings
-        add(column, label("Translate into"), 24, false);
-        languageField = field(Prefs.DEFAULT_LANGUAGE, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
-        add(column, languageField, 0, true);
+        // ---- 2. Language ----
+        LinearLayout languageBody = section(column, "🌐", "Language", 1);
+        add(languageBody, label("Translate into"), 0, false);
+        languageList = new Spinner(this);
+        ArrayAdapter<String> languages = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item,
+                Ui.languageLabels());
+        languages.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        languageList.setAdapter(languages);
+        add(languageBody, languageList, 4, true);
+        languageField = field("Type a language, e.g. Tamil",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        add(languageBody, languageField, 4, true);
+        languageList.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                languageField.setVisibility(position == Ui.LANGUAGES.length ? View.VISIBLE : View.GONE);
+                if (!loading) {
+                    saveFields();
+                }
+                refreshSections();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
 
         originalBox = new CheckBox(this);
         originalBox.setText("Also show the original text above each translation");
         originalBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        add(column, originalBox, 12, false);
+        add(languageBody, originalBox, 10, false);
 
-        summaryBox = new CheckBox(this);
-        summaryBox.setText("Show a short summary instead of the full translation");
-        summaryBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        summaryBox.setOnCheckedChangeListener((box, checked) -> prefs.setSummaryMode(checked));
-        add(column, summaryBox, 4, false);
-        add(column, secondary("1–3 sentences in your language. On a translation card, tap Full to see "
-                + "everything (or Summary on any card). In Live mode, a summary appears every few sentences; "
-                + "switch with ≡ in the Live panel. Each summary is one more AI request."), 0, false);
-
+        // ---- 3. Live & audio ----
+        LinearLayout liveBody = section(column, "⚡", "Live, audio & summaries", 2);
         waitSentencesBox = new CheckBox(this);
-        waitSentencesBox.setText("Live: wait until a sentence is finished before translating it");
+        waitSentencesBox.setText("Wait for whole sentences");
         waitSentencesBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         waitSentencesBox.setChecked(prefs.waitForSentences());
-        waitSentencesBox.setOnCheckedChangeListener((box, checked) -> prefs.setWaitForSentences(checked));
-        add(column, waitSentencesBox, 4, false);
-        add(column, secondary("For captions, subtitles and messages that appear word by word: a sentence is "
-                + "translated once it ends (or stops changing for a few seconds), so you get whole sentences "
-                + "instead of pieces. Turn off for the fastest translations."), 0, false);
-        add(column, secondary("The app remembers what it already translated while the bubble is on: text it "
-                + "has seen isn't translated again, and new text is translated as the continuation of the "
-                + "earlier lines, so conversations, videos and stories stay consistent. Tap 🗑 in the Live "
-                + "panel to start fresh."), 8, false);
+        waitSentencesBox.setOnCheckedChangeListener((box, checked) -> {
+            prefs.setWaitForSentences(checked);
+            refreshSections();
+        });
+        add(liveBody, waitSentencesBox, 0, false);
+        add(liveBody, optionNote("For captions and messages that appear word by word: each sentence is translated "
+                + "once it's finished, instead of in pieces."), 0, false);
 
-        // Audio translation
-        add(column, label("Audio translation"), 24, false);
-        add(column, secondary("In the bubble, choose 🎧 Audio to translate what's being said: the sound playing "
-                + "on this phone (videos, livestreams, voice messages, even without subtitles) or the microphone "
-                + "(people talking near you). It translates a sentence at a time, a moment after it's spoken, "
-                + "with the same memory, whole sentences and summaries as Live mode. Phone calls can't be "
-                + "translated: Android doesn't allow recording them."), 4, false);
-        add(column, secondary("Gemini listens itself (one request per few seconds of speech, so the free limit "
-                + "goes faster). ChatGPT uses OpenAI's speech-to-text (" + OpenAiEngine.TRANSCRIBE_MODEL
-                + ", about $0.0045 a minute) plus a translation. The on-device AI (Gemma 4) listens without "
-                + "internet; it needs a few seconds per sentence."), 6, false);
+        summaryBox = new CheckBox(this);
+        summaryBox.setText("Short summaries instead of full translations");
+        summaryBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        summaryBox.setOnCheckedChangeListener((box, checked) -> {
+            prefs.setSummaryMode(checked);
+            refreshSections();
+        });
+        add(liveBody, summaryBox, 6, false);
+        add(liveBody, optionNote("The gist in 1–3 sentences. You can also switch on any card (Summary / Full) "
+                + "or with ≡ in the Live panel."), 0, false);
+
+        add(liveBody, label("🎧 Audio translation"), 14, false);
+        add(liveBody, secondary("Translates what's said in videos and streams on this phone, or by people near "
+                + "you (microphone). Phone calls can't be translated: Android doesn't allow it."), 4, false);
         audioStatus = secondary("");
-        add(column, audioStatus, 8, false);
+        add(liveBody, audioStatus, 8, false);
         audioAllowButton = smallButton("Allow listening", true);
         audioAllowButton.setOnClickListener(v -> askForMicrophone());
-        add(column, audioAllowButton, 6, false);
-        refreshAudioStatus();
+        add(liveBody, audioAllowButton, 4, false);
+        add(liveBody, secondary("The app remembers what it translated while the bubble is on, so new text follows "
+                + "on from the earlier lines. Tap 🗑 in the Live panel to start fresh."), 14, false);
 
-        // Read aloud
-        add(column, label("Read aloud"), 24, false);
+        // ---- 4. Read aloud ----
+        LinearLayout voiceBody = section(column, "🔊", "Read aloud", 3);
         readAloudBox = new CheckBox(this);
         readAloudBox.setText("Read every translation aloud automatically");
         readAloudBox.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        readAloudBox.setOnCheckedChangeListener((box, checked) -> prefs.setReadAloud(checked));
-        add(column, readAloudBox, 2, false);
-        add(column, secondary("You can also tap 🔊 on any translation to hear it, or tap a line in the Live "
-                + "panel."), 2, false);
+        readAloudBox.setOnCheckedChangeListener((box, checked) -> {
+            prefs.setReadAloud(checked);
+            refreshSections();
+        });
+        add(voiceBody, readAloudBox, 0, false);
+        add(voiceBody, optionNote("Or tap 🔊 on any translation, or a line in the Live panel."), 0, false);
 
-        add(column, label("Voice"), 12, false);
+        add(voiceBody, label("Voice"), 12, false);
         RadioGroup voices = new RadioGroup(this);
         phoneVoiceOption = option("Phone voice");
         aiVoiceOption = option("Natural AI voice (Gemini)");
@@ -813,26 +927,24 @@ public class MainActivity extends Activity {
         voices.addView(phoneVoiceOption);
         voices.addView(optionNote("Free and works offline. Clear, but sounds like a machine."));
         voices.addView(aiVoiceOption);
-        voices.addView(optionNote("Sounds like a real person, with emotion that fits the words. Needs internet "
-                + "and a free Gemini key, which has daily limits."));
+        voices.addView(optionNote("Sounds like a real person, with feeling. Uses your free Gemini key (daily "
+                + "limits)."));
         voices.addView(openAiVoiceOption);
-        voices.addView(optionNote("OpenAI's most natural voices, with emotion that fits the words. Needs "
-                + "internet and an OpenAI key with credit. Paid per use: roughly 2–3 US cents per minute of "
-                + "speech."));
+        voices.addView(optionNote("OpenAI's most natural voices. Paid: roughly 2–3 US cents per minute of speech."));
         phoneVoiceOption.setOnClickListener(v -> onVoiceModeChosen(Prefs.VOICE_PHONE));
         aiVoiceOption.setOnClickListener(v -> onVoiceModeChosen(Prefs.VOICE_AI));
         openAiVoiceOption.setOnClickListener(v -> onVoiceModeChosen(Prefs.VOICE_OPENAI));
-        add(column, voices, 0, true);
+        add(voiceBody, voices, 0, true);
 
         aiVoicePanel = panel();
         buildAiVoicePanel(aiVoicePanel);
-        add(column, aiVoicePanel, 8, true);
+        add(voiceBody, aiVoicePanel, 8, true);
 
         openAiVoicePanel = panel();
         buildOpenAiVoicePanel(openAiVoicePanel);
-        add(column, openAiVoicePanel, 8, true);
+        add(voiceBody, openAiVoicePanel, 8, true);
 
-        add(column, label("Voice speed"), 12, false);
+        add(voiceBody, label("Voice speed"), 12, false);
         RadioGroup speeds = new RadioGroup(this);
         speeds.setOrientation(LinearLayout.HORIZONTAL);
         slowOption = option("Slow");
@@ -844,43 +956,257 @@ public class MainActivity extends Activity {
         speeds.addView(slowOption);
         speeds.addView(normalOption);
         speeds.addView(fastOption);
-        add(column, speeds, 0, false);
+        add(voiceBody, speeds, 0, false);
 
-        Button testVoice = smallButton("Test voice", false);
+        Button testVoice = smallButton("▶  Test voice", false);
         testVoice.setOnClickListener(v -> onTestVoice());
-        add(column, testVoice, 6, false);
+        add(voiceBody, testVoice, 6, false);
 
         aiVoiceStatus = text("", 13);
         aiVoiceStatus.setTextColor(Ui.isDark(this) ? 0xFFFFB74D : 0xFFB45309);
         aiVoiceStatus.setLineSpacing(0, 1.15f);
         aiVoiceStatus.setVisibility(View.GONE);
-        add(column, aiVoiceStatus, 4, false);
+        add(voiceBody, aiVoiceStatus, 4, false);
 
-        statusView = text("", 15);
-        add(column, statusView, 24, false);
+        // ---- 5. Help ----
+        LinearLayout helpBody = section(column, "❓", "Help & tips", 4);
+        add(helpBody, helpRow("Translate what's on screen", "Tap the bubble, then drag a box over the text. "
+                + "Or tap once anywhere to translate the whole screen."), 0, true);
+        helpRow(helpBody, "● Live", "For chats, games and subtitles: choose ● Live after tapping the "
+                + "bubble, then the area to watch. New text is translated as it appears.");
+        helpRow(helpBody, "🎧 Audio", "Choose 🎧 Audio after tapping the bubble, then Sound on this phone "
+                + "or Microphone.");
+        helpRow(helpBody, "Move or turn off the bubble", "Drag it anywhere. To turn it off, drag it onto "
+                + "the ✕ that appears at the bottom, or tap Stop here.");
+        helpRow(helpBody, "The \"over other apps\" switch is greyed out?", "Android does this for apps installed "
+                + "from a file. Open Settings → Apps → Screen Translator, tap ⋮ (top right) → \"Allow restricted "
+                + "settings\", then turn the switch on.");
+        helpRow(helpBody, "Black screen or nothing found?", "Some apps (banking, some video apps) block "
+                + "screenshots, so they can't be translated. Try a smaller box around the text.");
+        helpRow(helpBody, "Translations sound wrong?", "Gemini and ChatGPT translate better than the "
+                + "on-device AI. In Live mode, let it run: each line uses the earlier ones as context.");
+        Button guide = smallButton("Show the setup guide again", false);
+        guide.setOnClickListener(v -> openWelcome());
+        add(helpBody, guide, 12, false);
 
-        Button start = new Button(this);
-        start.setText("Start translator bubble");
-        start.setAllCaps(false);
-        start.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        start.setTextColor(Color.WHITE);
-        start.setBackgroundTintList(ColorStateList.valueOf(Ui.ACCENT));
-        start.setMinHeight(Ui.dp(this, 56));
-        start.setOnClickListener(v -> onStartTapped());
-        add(column, start, 12, true);
-
-        stopButton = new Button(this);
-        stopButton.setText("Stop translator");
-        stopButton.setAllCaps(false);
-        stopButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        stopButton.setOnClickListener(v -> onStopTapped());
-        add(column, stopButton, 4, true);
-
-        add(column, secondary("Tips: you can drag the bubble anywhere. To turn it off, use Stop here or in the "
-                + "notification. Live mode checks the screen whenever it changes and pauses itself after 20 "
-                + "minutes. Apps that block screenshots (banking, some video apps) show up black and can't be "
-                + "translated."), 20, false);
+        refreshSections();
         return scroll;
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Sections, checklist and the setup guide
+
+    /** A card with a header that opens and closes it. Returns where its content goes. */
+    private LinearLayout section(LinearLayout column, String emoji, String title, int index) {
+        LinearLayout card = card();
+        card.setPadding(0, 0, 0, 0);
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        int pad = Ui.dp(this, 16);
+        header.setPadding(pad, Ui.dp(this, 14), pad, Ui.dp(this, 14));
+        TextView icon = text(emoji, 22);
+        header.addView(icon, new LinearLayout.LayoutParams(Ui.dp(this, 38), ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        TextView name = text(title, 17);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        words.addView(name);
+        TextView summary = secondary("");
+        summary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        words.addView(summary);
+        header.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView arrow = text("▾", 18);
+        arrow.setTextColor(secondaryTextColor());
+        header.addView(arrow);
+        card.addView(header);
+
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(pad, 0, pad, pad);
+        card.addView(body);
+        header.setOnClickListener(v -> setSectionOpen(index, body.getVisibility() != View.VISIBLE));
+        add(column, card, 12, true);
+
+        sectionBodies[index] = body;
+        sectionSummaries[index] = summary;
+        sectionArrows[index] = arrow;
+        boolean open = index == 0 && !engineIsSetUp();   // start with only what still needs doing open
+        body.setVisibility(open ? View.VISIBLE : View.GONE);
+        arrow.setText(open ? "▴" : "▾");
+        return body;
+    }
+
+    private void setSectionOpen(int index, boolean open) {
+        sectionBodies[index].setVisibility(open ? View.VISIBLE : View.GONE);
+        sectionArrows[index].setText(open ? "▴" : "▾");
+    }
+
+    /** Opens a section and scrolls to it. */
+    private void showSection(int index) {
+        setSectionOpen(index, true);
+        View card = (View) sectionBodies[index].getParent();
+        scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, card.getTop() - Ui.dp(this, 8))));
+    }
+
+    /** The one-line summaries under each section's title. */
+    private void refreshSections() {
+        if (sectionSummaries[0] == null) {
+            return;
+        }
+        String engine;
+        switch (prefs.engine()) {
+            case Prefs.ENGINE_GEMINI:
+                engine = "Gemini · " + (prefs.geminiKey().isEmpty() ? "add your free key" : "key added ✓");
+                break;
+            case Prefs.ENGINE_OPENAI:
+                engine = "ChatGPT · " + (prefs.openAiKey().isEmpty() ? "add your key" : "key added ✓");
+                break;
+            default:
+                engine = "On this phone · " + (ModelStore.isReady(this, selectedModel()) ? "ready ✓"
+                        : ModelStore.progress(this, selectedModel()) != null ? "downloading…" : "download needed");
+                break;
+        }
+        sectionSummaries[0].setText(engine);
+        sectionSummaries[1].setText("Into " + currentLanguage()
+                + (originalBox != null && originalBox.isChecked() ? " · with the original" : ""));
+        sectionSummaries[2].setText((prefs.waitForSentences() ? "Whole sentences" : "Word by word")
+                + (prefs.summaryMode() ? " · summaries" : "")
+                + " · audio " + (canRecord() ? "allowed ✓" : "not allowed yet"));
+        String voice = Prefs.VOICE_AI.equals(prefs.voiceMode()) ? "Gemini voice"
+                : Prefs.VOICE_OPENAI.equals(prefs.voiceMode()) ? "OpenAI voice" : "Phone voice";
+        sectionSummaries[3].setText((prefs.readAloud() ? "On" : "Off") + " · " + voice);
+        sectionSummaries[4].setText("How to use it, and fixes for common problems");
+    }
+
+    private boolean engineIsSetUp() {
+        switch (prefs.engine()) {
+            case Prefs.ENGINE_GEMINI:
+                return !prefs.geminiKey().isEmpty();
+            case Prefs.ENGINE_OPENAI:
+                return !prefs.openAiKey().isEmpty();
+            default:
+                return ModelStore.isReady(this, selectedModel());
+        }
+    }
+
+    /** What's done and what's left before translating, with a button for each thing left. */
+    private void refreshChecklist() {
+        if (checklist == null) {
+            return;
+        }
+        boolean engineOk = engineIsSetUp();
+        boolean overlayOk = Settings.canDrawOverlays(this);
+        boolean micOk = canRecord();
+        String state = engineOk + "/" + overlayOk + "/" + micOk + "/" + prefs.engine();
+        if (state.equals(checklistState)) {
+            return;   // unchanged: don't rebuild every second
+        }
+        checklistState = state;
+        checklist.removeAllViews();
+        TextView heading = text(engineOk && overlayOk ? "✓ Ready to translate" : "Finish setting up", 17);
+        heading.setTypeface(Typeface.DEFAULT_BOLD);
+        checklist.addView(heading);
+        String engineText;
+        switch (prefs.engine()) {
+            case Prefs.ENGINE_GEMINI:
+                engineText = engineOk ? "Gemini is ready" : "Add your free Gemini key";
+                break;
+            case Prefs.ENGINE_OPENAI:
+                engineText = engineOk ? "ChatGPT is ready" : "Add your OpenAI key";
+                break;
+            default:
+                engineText = engineOk ? "The on-device AI is ready" : "Download the on-device AI";
+                break;
+        }
+        checkRow(engineOk, engineText, engineOk ? null : "Set up", () -> showSection(0));
+        checkRow(overlayOk, overlayOk ? "Can show the bubble over other apps" : "Allow the bubble over other apps",
+                overlayOk ? null : "Allow", () -> openOverlaySettings(false));
+        checkRow(micOk, micOk ? "Listening allowed (for 🎧 Audio)" : "Optional: allow listening (for 🎧 Audio)",
+                micOk ? null : "Allow", this::askForMicrophone);
+        checklist.setVisibility(engineOk && overlayOk && micOk ? View.GONE : View.VISIBLE);
+    }
+
+    private void checkRow(boolean done, String label, String action, Runnable onAction) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView mark = text(done ? "✓" : "○", 18);
+        mark.setTextColor(done ? (Ui.isDark(this) ? 0xFF81C784 : 0xFF2E7D32) : secondaryTextColor());
+        row.addView(mark, new LinearLayout.LayoutParams(Ui.dp(this, 30), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView words = text(label, 15);
+        if (done) {
+            words.setTextColor(secondaryTextColor());
+        }
+        row.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (action != null) {
+            Button button = smallButton(action, true);
+            button.setOnClickListener(v -> onAction.run());
+            row.addView(button);
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = Ui.dp(this, 8);
+        checklist.addView(row, params);
+    }
+
+    private View helpRow(String title, String body) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        TextView name = text(title, 15);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        row.addView(name);
+        row.addView(secondary(body));
+        return row;
+    }
+
+    private void helpRow(LinearLayout into, String title, String body) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = Ui.dp(this, 12);
+        into.addView(helpRow(title, body), params);
+    }
+
+    /** The language chosen in the list (or typed, for "Other…"). */
+    private String currentLanguage() {
+        if (languageList == null) {
+            return prefs.language();
+        }
+        int position = languageList.getSelectedItemPosition();
+        if (position >= 0 && position < Ui.LANGUAGES.length) {
+            return Ui.LANGUAGES[position][0];
+        }
+        String typed = languageField.getText().toString().trim();
+        return typed.isEmpty() ? Prefs.DEFAULT_LANGUAGE : typed;
+    }
+
+    private void showLanguage(String language) {
+        int index = Ui.languageIndex(language);
+        languageList.setSelection(index >= 0 ? index : Ui.LANGUAGES.length);
+        languageField.setText(index >= 0 ? "" : language);
+        languageField.setVisibility(index >= 0 ? View.GONE : View.VISIBLE);
+    }
+
+    private void openWelcome() {
+        saveFields();
+        startActivityForResult(new Intent(this, WelcomeActivity.class), REQUEST_WELCOME);
+    }
+
+    /** New users (no key, no model) see the setup guide first. */
+    private boolean isNewUser() {
+        return prefs.geminiKey().isEmpty() && prefs.openAiKey().isEmpty()
+                && !ModelStore.isReady(this, ModelStore.E2B) && !ModelStore.isReady(this, ModelStore.E4B);
+    }
+
+    private LinearLayout card() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 16);
+        card.setPadding(pad, pad, pad, pad);
+        boolean dark = Ui.isDark(this);
+        card.setBackground(Ui.rounded(dark ? 0xFF1E1F25 : 0xFFFFFFFF, Ui.dp(this, 18),
+                dark ? 0x22FFFFFF : 0x14000000, Ui.dp(this, 1)));
+        return card;
     }
 
     private void buildOnDevicePanel(LinearLayout panel) {
@@ -1108,31 +1434,134 @@ public class MainActivity extends Activity {
     }
 
     private void buildGeminiPanel(LinearLayout panel) {
-        panel.addView(label("Gemini API key"));
+        panel.addView(label("Your free Gemini key"));
+        add(panel, secondary("1. Tap \"Get a free key\" and sign in with Google.\n"
+                + "2. Tap \"Create API key\", then Copy.\n"
+                + "3. Come back and tap Paste."), 4, false);
         geminiKeyField = field("Paste your key", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        add(panel, geminiKeyField, 0, true);
-        add(panel, secondary("Create a free key at aistudio.google.com. The free tier allows a limited number "
-                + "of translations per minute and per day, and Google may use free-tier requests to improve "
-                + "its products. The key is saved only on this phone."), 4, false);
-        panel.addView(link("Get a free Gemini key ↗", GEMINI_KEYS_URL), linkParams());
-        add(panel, label("Gemini model"), 10, false);
+        add(panel, keyRow(geminiKeyField, GEMINI_KEYS_URL, "Get a free key ↗"), 8, true);
+        geminiKeyNote = secondary("");
+        add(panel, geminiKeyNote, 2, false);
+        watchKey(geminiKeyField, Prefs.ENGINE_GEMINI);
+        add(panel, secondary("🔒 Saved only on this phone. The free tier has daily limits, and Google may use "
+                + "free-tier requests to improve its products."), 6, false);
+
+        LinearLayout advanced = advanced(panel);
+        advanced.addView(label("Gemini model"));
         geminiModelField = field(Prefs.DEFAULT_GEMINI_MODEL, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        add(panel, geminiModelField, 0, true);
-        add(panel, secondary("Default: " + Prefs.DEFAULT_GEMINI_MODEL + " (fast, on the free tier)."), 4, false);
+        add(advanced, geminiModelField, 0, true);
+        add(advanced, secondary("Leave empty for " + Prefs.DEFAULT_GEMINI_MODEL + " (fast, free tier). For better "
+                + "quality try gemini-3.8-flash (smaller free limit)."), 4, false);
     }
 
     private void buildOpenAiPanel(LinearLayout panel) {
-        panel.addView(label("OpenAI API key"));
+        panel.addView(label("Your OpenAI key"));
+        add(panel, secondary("1. Tap \"Get a key\" and sign in to OpenAI.\n"
+                + "2. Add a few dollars of credit under Billing.\n"
+                + "3. Tap \"Create new secret key\", then Copy, and come back to tap Paste."), 4, false);
         openAiKeyField = field("sk-…", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        add(panel, openAiKeyField, 0, true);
-        add(panel, secondary("Create one at platform.openai.com. It's billed separately from a ChatGPT "
-                + "subscription; each translation costs a fraction of a cent. The key is saved only on this "
-                + "phone."), 4, false);
-        panel.addView(link("Get an API key ↗", OPENAI_KEYS_URL), linkParams());
-        add(panel, label("ChatGPT model"), 10, false);
+        add(panel, keyRow(openAiKeyField, OPENAI_KEYS_URL, "Get a key ↗"), 8, true);
+        openAiKeyNote = secondary("");
+        add(panel, openAiKeyNote, 2, false);
+        watchKey(openAiKeyField, Prefs.ENGINE_OPENAI);
+        add(panel, secondary("🔒 Saved only on this phone. Billed separately from a ChatGPT subscription; each "
+                + "translation costs a fraction of a cent."), 6, false);
+
+        LinearLayout advanced = advanced(panel);
+        advanced.addView(label("ChatGPT model"));
         openAiModelField = field(Prefs.DEFAULT_OPENAI_MODEL, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        add(panel, openAiModelField, 0, true);
-        add(panel, secondary("Default: " + Prefs.DEFAULT_OPENAI_MODEL + " (fast and low-cost)."), 4, false);
+        add(advanced, openAiModelField, 0, true);
+        add(advanced, secondary("Leave empty for " + Prefs.DEFAULT_OPENAI_MODEL + " (fast and low-cost)."), 4, false);
+    }
+
+    /** The key box with Paste, and a link to where the key is made. */
+    private View keyRow(EditText keyField, String url, String linkText) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.addView(keyField, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        Button paste = smallButton("Paste", true);
+        paste.setOnClickListener(v -> {
+            String copied = Ui.clipboardText(this);
+            if (copied.isEmpty()) {
+                Toast.makeText(this, "Nothing copied yet. Copy the key on the website first.",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                keyField.setText(copied);
+                saveFields();
+            }
+        });
+        row.addView(paste);
+        box.addView(row);
+        box.addView(link(linkText, url), linkParams());
+        return box;
+    }
+
+    /** Shows "✓ Key added", or a gentle warning if the key looks wrong, as it's typed or pasted. */
+    private void watchKey(EditText keyField, String engine) {
+        keyField.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                showKeyNote(engine);
+                if (!loading) {
+                    saveFields();
+                    refreshSections();
+                    refreshChecklist();
+                }
+            }
+        });
+    }
+
+    private void showKeyNote(String engine) {
+        boolean gemini = Prefs.ENGINE_GEMINI.equals(engine);
+        EditText keyField = gemini ? geminiKeyField : openAiKeyField;
+        TextView note = gemini ? geminiKeyNote : openAiKeyNote;
+        if (keyField == null || note == null) {
+            return;
+        }
+        String key = keyField.getText().toString().trim();
+        String warning = Ui.keyWarning(engine, key);
+        if (key.isEmpty()) {
+            note.setVisibility(View.GONE);
+            return;
+        }
+        note.setVisibility(View.VISIBLE);
+        if (warning != null) {
+            note.setText("⚠ " + warning);
+            note.setTextColor(Ui.isDark(this) ? 0xFFFFB74D : 0xFFB45309);
+        } else {
+            note.setText("✓ Key added");
+            note.setTextColor(Ui.isDark(this) ? 0xFF81C784 : 0xFF2E7D32);
+        }
+    }
+
+    /** A folded "Advanced" part of a panel, for settings most people never need. */
+    private LinearLayout advanced(LinearLayout panel) {
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setVisibility(View.GONE);
+        final Button toggle = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        toggle.setText("Advanced ▾");
+        toggle.setAllCaps(false);
+        toggle.setTextColor(secondaryTextColor());
+        toggle.setOnClickListener(v -> {
+            boolean open = body.getVisibility() != View.VISIBLE;
+            body.setVisibility(open ? View.VISIBLE : View.GONE);
+            toggle.setText(open ? "Advanced ▴" : "Advanced ▾");
+        });
+        panel.addView(toggle, linkParams());
+        panel.addView(body);
+        return body;
     }
 
     // ----------------------------------------------------------------------------------------

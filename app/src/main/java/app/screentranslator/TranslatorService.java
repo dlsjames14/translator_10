@@ -194,6 +194,10 @@ public class TranslatorService extends Service {
     // Reading aloud
     private Speaker speaker;
     private AudioListener audioListener;
+    private LinearLayout closeTarget;     // the ✕ shown while dragging the bubble: drop it there to turn off
+    private TextView closeCircle;
+    private boolean overCloseTarget;
+    private TextView cardFix;             // "Open app" on a card that shows a problem the app can fix
     private boolean foregroundWithMicrophone;   // the service may record (needs the permission at start)
     private TextView cardSpeak;
     private String cardSpokenText;
@@ -278,6 +282,11 @@ public class TranslatorService extends Service {
             prepareWindows();
             startCapture(resultCode, data);
             showBubble();
+            Prefs tipPrefs = new Prefs(this);
+            if (!tipPrefs.bubbleTipShown()) {
+                tipPrefs.setBubbleTipShown();
+                toast("Tap the round bubble to translate. Drag it to move it, or onto ✕ to turn it off.");
+            }
             running = true;
         } catch (RuntimeException e) {
             toast("Couldn't start screen capture: " + e.getMessage());
@@ -760,6 +769,7 @@ public class TranslatorService extends Service {
         worker.execute(() -> {
             String text;
             boolean ok;
+            boolean fixable = false;
             try {
                 Translation.Result result = engineFor(settings).translateOnce(shot, request);
                 text = result.text;
@@ -773,6 +783,7 @@ public class TranslatorService extends Service {
             } catch (TranslateException e) {
                 text = e.getMessage();
                 ok = false;
+                fixable = e.fatal;   // e.g. a missing or wrong key: fixed in the app
             } catch (RuntimeException e) {
                 text = "Something went wrong: " + e.getMessage();
                 ok = false;
@@ -781,9 +792,11 @@ public class TranslatorService extends Service {
             }
             final String result = text;
             final boolean success = ok;
+            final boolean canFix = fixable;
             main.post(() -> {
                 if (id == requestId && card != null) {
                     setCardResult(result, success);
+                    cardFix.setVisibility(canFix ? View.VISIBLE : View.GONE);
                 }
             });
         });
@@ -1733,7 +1746,90 @@ public class TranslatorService extends Service {
         bubble = circle;
     }
 
-    /** Tap = start selecting. Drag = move the bubble; it snaps to the nearest side. */
+    /** While the bubble is dragged: a ✕ at the bottom of the screen. Dropping the bubble on it turns it off. */
+    private void showCloseTarget() {
+        if (closeTarget != null || windowManager == null) {
+            return;
+        }
+        LinearLayout target = new LinearLayout(ui);
+        target.setOrientation(LinearLayout.VERTICAL);
+        target.setGravity(Gravity.CENTER_HORIZONTAL);
+        closeCircle = new TextView(ui);
+        closeCircle.setText("✕");
+        closeCircle.setTextColor(Color.WHITE);
+        closeCircle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26);
+        closeCircle.setGravity(Gravity.CENTER);
+        target.addView(closeCircle, new LinearLayout.LayoutParams(dp(64), dp(64)));
+        TextView label = new TextView(ui);
+        label.setText("Turn off");
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setShadowLayer(dp(3), 0, 0, 0xCC000000);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        labelParams.topMargin = dp(6);
+        target.addView(label, labelParams);
+        int width = dp(120);
+        int height = dp(100);
+        WindowManager.LayoutParams params = overlayParams(width, height,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+        Point screen = screenSize();
+        params.x = (screen.x - width) / 2;
+        params.y = screen.y - height - dp(56);
+        try {
+            windowManager.addView(target, params);
+        } catch (RuntimeException e) {
+            return;
+        }
+        closeTarget = target;
+        overCloseTarget = false;
+        paintCloseTarget();
+    }
+
+    private void updateCloseTarget() {
+        if (closeTarget == null || bubble == null) {
+            return;
+        }
+        Point screen = screenSize();
+        float bubbleX = bubbleParams.x + bubbleParams.width / 2f;
+        float bubbleY = bubbleParams.y + bubbleParams.height / 2f;
+        float targetX = screen.x / 2f;
+        float targetY = screen.y - dp(56) - dp(100) + dp(32);
+        boolean over = Math.hypot(bubbleX - targetX, bubbleY - targetY) < dp(80);
+        if (over != overCloseTarget) {
+            overCloseTarget = over;
+            paintCloseTarget();
+            if (over) {
+                bubble.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+            }
+        }
+    }
+
+    private void paintCloseTarget() {
+        if (closeCircle == null) {
+            return;
+        }
+        GradientDrawable circle = new GradientDrawable();
+        circle.setShape(GradientDrawable.OVAL);
+        circle.setColor(overCloseTarget ? 0xFFD32F2F : 0xCC000000);
+        circle.setStroke(dp(2), 0xCCFFFFFF);
+        closeCircle.setBackground(circle);
+        closeCircle.setScaleX(overCloseTarget ? 1.2f : 1f);
+        closeCircle.setScaleY(overCloseTarget ? 1.2f : 1f);
+    }
+
+    private void hideCloseTarget() {
+        if (closeTarget != null) {
+            removeWindow(closeTarget);
+            closeTarget = null;
+            closeCircle = null;
+        }
+        overCloseTarget = false;
+    }
+
+    /** Tap = start selecting. Drag = move the bubble; it snaps to the nearest side, or turns off on ✕. */
     private final class BubbleTouch implements View.OnTouchListener {
         private final int slop = ViewConfiguration.get(ui).getScaledTouchSlop();
         private float downRawX;
@@ -1764,11 +1860,18 @@ public class TranslatorService extends Service {
                         bubbleParams.x = downX + Math.round(dx);
                         bubbleParams.y = downY + Math.round(dy);
                         keepBubbleOnScreen(false);
+                        showCloseTarget();
+                        updateCloseTarget();
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     view.setAlpha(1f);
-                    if (moved) {
+                    boolean turnOff = moved && overCloseTarget;
+                    hideCloseTarget();
+                    if (turnOff) {
+                        toast("Screen Translator is off. Open the app to start it again.");
+                        shutdown();
+                    } else if (moved) {
                         keepBubbleOnScreen(true);
                     } else {
                         startSelection();
@@ -1776,6 +1879,7 @@ public class TranslatorService extends Service {
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     view.setAlpha(1f);
+                    hideCloseTarget();
                     return true;
                 default:
                     return false;
@@ -1876,13 +1980,32 @@ public class TranslatorService extends Service {
         header.addView(cardSpeak);
 
         cardSummaryChip = chip("Summary", dark);
+        cardSummaryChip.setTooltipText("Switch between a short summary and the full translation");
         cardSummaryChip.setOnClickListener(v -> onCardSummaryChip());
         LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         summaryParams.leftMargin = dp(8);
         header.addView(cardSummaryChip, summaryParams);
 
+        cardFix = chip("Open app", dark);
+        cardFix.setTooltipText("Open Screen Translator to fix this");
+        cardFix.setOnClickListener(v -> {
+            hideCard();
+            Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(open);
+            } catch (RuntimeException e) {
+                toast("Open Screen Translator from your home screen.");
+            }
+        });
+        cardFix.setVisibility(View.GONE);
+        LinearLayout.LayoutParams fixParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fixParams.leftMargin = dp(8);
+        header.addView(cardFix, fixParams);
+
         cardCopy = chip("Copy", dark);
+        cardCopy.setTooltipText("Copy the text");
         cardCopy.setOnClickListener(v -> copyToClipboard(cardBody.getText()));
         LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1891,6 +2014,7 @@ public class TranslatorService extends Service {
 
         TextView close = chip("✕", dark);
         close.setContentDescription("Close");
+        close.setTooltipText("Close");
         close.setOnClickListener(v -> hideCard());
         LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1925,6 +2049,7 @@ public class TranslatorService extends Service {
         cardCopy.setVisibility(View.GONE);
         cardSpeak.setVisibility(View.GONE);
         cardSummaryChip.setVisibility(View.GONE);
+        cardFix.setVisibility(View.GONE);
         cardSpokenText = null;
         cardFullText = null;
         cardSummary = null;
@@ -2112,6 +2237,7 @@ public class TranslatorService extends Service {
             card = null;
             cardSpeak = null;
             cardSummaryChip = null;
+            cardFix = null;
             cardSpokenText = null;
             cardFullText = null;
             cardSummary = null;
@@ -2120,6 +2246,7 @@ public class TranslatorService extends Service {
     }
 
     private void removeOverlays() {
+        hideCloseTarget();
         removeSelection();
         hideCard();
         stopLive();

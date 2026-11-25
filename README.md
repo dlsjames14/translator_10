@@ -65,6 +65,18 @@ The app needs **Android 12 or newer**.
 
 ## 3. Set up your engine
 
+The first time you open the app, a short **setup guide** walks you through it: what the app does,
+choosing an engine (Gemini is recommended for most people), getting the key with a **Paste** button
+(or downloading the on-device AI), and choosing your language from a list. You can open it again
+under **Help & tips → Show the setup guide again**.
+
+The main screen has the **Start** button at the top, a checklist of anything still missing (each
+with a button that fixes it), and folding sections: **How to translate**, **Language**,
+**Live, audio & summaries**, **Read aloud** and **Help & tips**. Model names and other technical
+options are under **Advanced**.
+
+If you'd rather set it up by hand:
+
 **On-device AI**
 
 1. Open Screen Translator and choose **On-device AI (Gemma 4)**.
@@ -79,9 +91,9 @@ phone** and pick it.
 
 **Gemini**
 
-1. Go to **aistudio.google.com/apikey**, sign in with a Google account, and create an API key.
-2. In Screen Translator, choose **Gemini (Google)** and paste the key. Leave the model as
-   `gemini-3.1-flash-lite`.
+1. In Screen Translator, choose **Gemini (Google)** and tap **Get a free key**. Google AI Studio
+   opens: sign in with a Google account, tap **Create API key**, then **Copy**.
+2. Come back and tap **Paste**. The app shows "✓ Key added" (or a warning if the key looks wrong).
 
 The free tier allows a limited number of requests per minute and per day, and Google may use
 free-tier requests to improve its products. Live mode automatically checks less often with Gemini
@@ -91,8 +103,7 @@ free-tier requests to improve its products. Live mode automatically checks less 
 
 1. Go to **platform.openai.com**, add a little credit under **Settings → Billing**, then create a key
    under **API keys**. API usage is billed separately from a ChatGPT Plus subscription.
-2. In Screen Translator, choose **ChatGPT (OpenAI)** and paste the key. Leave the model as
-   `gpt-6-luna`.
+2. In Screen Translator, choose **ChatGPT (OpenAI)**, copy the key and tap **Paste**.
 
 ## 4. Use it
 
@@ -273,6 +284,15 @@ How to use it:
 
 ## Good to know
 
+- **Turning the bubble off:** drag it onto the **✕ Turn off** that appears at the bottom of the
+  screen, or tap Stop in the app or the notification.
+- **Small buttons:** long-press any button on the bubble's panels to see what it does.
+- **When something needs fixing** (a missing key, for example), the translation card shows an
+  **Open app** button that takes you straight there.
+- **"Allow display over other apps" is greyed out?** Android does this for apps installed from a
+  file. Open Settings → Apps → Screen Translator, tap ⋮ → **Allow restricted settings**, then turn
+  the switch on.
+
 - **Privacy:** with the on-device AI, nothing leaves the phone. With Gemini or ChatGPT, only the
   area you select is sent, and only when a translation runs. Keys are stored only on your phone.
 - While the bubble is on, Android shows a screen-sharing indicator. That's expected. Turn the bubble
@@ -313,6 +333,7 @@ arm64 code only.
 
 | File | What it does |
 | --- | --- |
+| `WelcomeActivity.java` | The first-run setup guide (engine, key with Paste, model download, language). |
 | `MainActivity.java` | Settings screen: engine choice, keys, model download, and the permission steps. |
 | `TranslatorService.java` | Foreground service: screen capture, bubble, selection layer, result card, and Live mode (change detection, pacing, de-duplication). |
 | `TranslationEngine.java` | The interface every engine implements (Translate once and Live). |

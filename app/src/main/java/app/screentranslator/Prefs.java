@@ -40,6 +40,8 @@ final class Prefs {
     private static final String KEY_SUMMARY = "summary_mode";
     private static final String KEY_WAIT_SENTENCES = "wait_for_sentences";
     private static final String KEY_SELECTION_MODE = "selection_mode";
+    private static final String KEY_WELCOME_DONE = "welcome_done";
+    private static final String KEY_BUBBLE_TIP_SHOWN = "bubble_tip_shown";
     private static final String KEY_AI_PAUSED_UNTIL = "ai_voice_paused_until";
     private static final String KEY_AI_PAUSED_FOR = "ai_voice_paused_for";
 
@@ -266,6 +268,39 @@ final class Prefs {
 
     void setOnDeviceModel(String modelId) {
         store.edit().putString(KEY_ON_DEVICE_MODEL, modelId).apply();
+    }
+
+    /**
+     * True once the first-run guide was finished or skipped. People who already set the app up
+     * (a key or a downloaded model) don't see it.
+     */
+    boolean welcomeDone() {
+        return store.getBoolean(KEY_WELCOME_DONE, false);
+    }
+
+    void setWelcomeDone() {
+        store.edit().putBoolean(KEY_WELCOME_DONE, true).apply();
+    }
+
+    /** The one-time tip about the bubble (tap it; drag it to ✕ to turn it off). */
+    boolean bubbleTipShown() {
+        return store.getBoolean(KEY_BUBBLE_TIP_SHOWN, false);
+    }
+
+    void setBubbleTipShown() {
+        store.edit().putBoolean(KEY_BUBBLE_TIP_SHOWN, true).apply();
+    }
+
+    void setGeminiKey(String key) {
+        store.edit().putString(KEY_GEMINI_KEY, key == null ? "" : key.trim()).apply();
+    }
+
+    void setOpenAiKey(String key) {
+        store.edit().putString(KEY_OPENAI_KEY, key == null ? "" : key.trim()).apply();
+    }
+
+    void setLanguage(String language) {
+        store.edit().putString(KEY_LANGUAGE, language == null ? "" : language.trim()).apply();
     }
 
     /** Saves everything typed on the settings screen. */

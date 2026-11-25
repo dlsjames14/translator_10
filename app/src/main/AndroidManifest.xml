@@ -39,6 +39,11 @@
             </intent-filter>
         </activity>
 
+        <!-- The first-run guide. -->
+        <activity
+            android:name=".WelcomeActivity"
+            android:exported="false" />
+
         <service
             android:name=".TranslatorService"
             android:exported="false"

@@ -102,7 +102,7 @@ final class LivePanel {
         header.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         pauseChip = chip("⏸");
-        pauseChip.setContentDescription("Pause");
+        describe(pauseChip, "Pause");
         pauseChip.setOnClickListener(v -> actions.onPauseToggle());
         header.addView(pauseChip);
         voiceChip = chip("🔇");
@@ -114,15 +114,15 @@ final class LivePanel {
         header.addView(summaryChip, chipParams());
         setSummary(false);
         TextView clear = chip("🗑");
-        clear.setContentDescription("Clear the list and start fresh");
+        describe(clear, "Clear the list and start fresh");
         clear.setOnClickListener(v -> actions.onClear());
         header.addView(clear, chipParams());
         TextView move = chip("⇅");
-        move.setContentDescription("Move panel to the other end of the screen");
+        describe(move, "Move the panel to the top or bottom");
         move.setOnClickListener(v -> actions.onMove());
         header.addView(move, chipParams());
         TextView close = chip("✕");
-        close.setContentDescription("Stop live translation");
+        describe(close, "Stop");
         close.setOnClickListener(v -> actions.onClose());
         header.addView(close, chipParams());
 
@@ -143,9 +143,7 @@ final class LivePanel {
 
         empty = new TextView(context);
         empty.setText("Watching for new text. Anything that isn't in " + language
-                + " will appear here as soon as it shows up, translated with the earlier lines in mind. "
-                + "Tap a line to hear it, long-press to copy it. Tap 🔇 to have new lines read aloud, ≡ for "
-                + "short summaries instead of every line, and 🗑 to clear the list and start fresh.");
+                + " appears here as soon as it shows up. Tap a line to hear it, long-press to copy it." + LEGEND);
         empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         empty.setLineSpacing(0, 1.15f);
         empty.setTextColor(secondaryColor());
@@ -160,13 +158,13 @@ final class LivePanel {
 
     void setPaused(boolean paused) {
         pauseChip.setText(paused ? "▶" : "⏸");
-        pauseChip.setContentDescription(paused ? "Resume" : "Pause");
+        describe(pauseChip, paused ? "Resume" : "Pause");
     }
 
     /** Shows whether new lines are read aloud. */
     void setVoice(boolean on) {
         voiceChip.setText(on ? "🔊" : "🔇");
-        voiceChip.setContentDescription(on ? "Stop reading new lines aloud" : "Read new lines aloud");
+        describe(voiceChip, on ? "Stop reading new lines aloud" : "Read new lines aloud");
         voiceChip.setBackground(Ui.rounded(on ? (dark ? 0x669FA8DA : 0x333949AB) : (dark ? 0x26FFFFFF : 0x12000000),
                 dp(15)));
     }
@@ -174,12 +172,22 @@ final class LivePanel {
     /** For audio translation: a different title and starting text. */
     void setAudio(String titleText, String emptyText) {
         title.setText(titleText.toUpperCase(Locale.ROOT));
-        empty.setText(emptyText);
+        empty.setText(emptyText + LEGEND);
+    }
+
+    /** What the buttons do (they're small icons), shown until the first translation arrives. */
+    private static final String LEGEND = "\n\n⏸ pause  ·  🔇 read aloud  ·  ≡ summaries  ·  🗑 clear  ·  ⇅ move  ·  "
+            + "✕ stop\n(Long-press a button to see what it does.)";
+
+    /** Sets what a button is called for screen readers, and the label shown when it's long-pressed. */
+    private static void describe(TextView chip, String text) {
+        chip.setContentDescription(text);
+        chip.setTooltipText(text);
     }
 
     /** Shows whether summaries are on. */
     void setSummary(boolean on) {
-        summaryChip.setContentDescription(on ? "Show every line" : "Show short summaries instead of every line");
+        describe(summaryChip, on ? "Show every line" : "Show short summaries instead of every line");
         summaryChip.setBackground(Ui.rounded(on ? (dark ? 0x669FA8DA : 0x333949AB) : (dark ? 0x26FFFFFF : 0x12000000),
                 dp(15)));
     }
