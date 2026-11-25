@@ -127,7 +127,12 @@ final class Speaker {
 
     /** When this many pieces are still waiting to be spoken, Live mode skips ahead to the newest text. */
     private static final int MAX_BACKLOG = 8;
-    private static final int MAX_AI_BACKLOG = 3;
+    /**
+     * The AI voice falls behind when new text comes faster than it can be read. It always finishes
+     * the sentence it's reading; past this much waiting text (about 40 seconds of speech) the oldest
+     * waiting lines are skipped so it stays close to what's on screen.
+     */
+    private static final int MAX_AI_WAITING_CHARS = 600;
     // One request per reading where possible: Google's daily limit counts requests, and streaming
     // already makes long text start quickly.
     private static final int AI_PIECE_LENGTH = 1200;
@@ -347,11 +352,13 @@ final class Speaker {
             }
             phoneFinished();
             ai.stop();
-        } else if (ai.backlog() > MAX_AI_BACKLOG) {
-            ai.stop();   // falling behind: skip ahead to the newest text
         }
         aiOptions = options;
-        ai.speak(aiPieces(text, options), options);
+        List<String> pieces = aiPieces(text, options);
+        ai.speak(pieces, options);
+        if (!replace && ai.trimBacklog(MAX_AI_WAITING_CHARS, pieces.size()) > 0) {
+            problem("Reading aloud fell behind the new lines, so some older ones were skipped.");
+        }
         aiActive = true;
         updateSpeaking();
     }

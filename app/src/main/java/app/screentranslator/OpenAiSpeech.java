@@ -176,8 +176,12 @@ final class OpenAiSpeech {
                     case "response.done":
                         JSONObject response = message.optJSONObject("response");
                         String status = response == null ? "" : response.optString("status", "");
-                        if ("completed".equals(status) || gotAudio) {
+                        if (gotAudio) {
                             return;
+                        }
+                        if ("completed".equals(status)) {
+                            // Finished without a sound (it happens now and then): tried again.
+                            throw new TranslateException("OpenAI's voice didn't send any audio.", false);
                         }
                         throw new TranslateException("OpenAI didn't read the text (" + status + reason(response)
                                 + ").", false);

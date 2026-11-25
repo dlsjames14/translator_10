@@ -317,6 +317,7 @@ How to use it:
 | "Your OpenAI account is out of credit" | Add credit under Settings → Billing on platform.openai.com. |
 | The natural AI voice stopped and the phone voice reads instead | Google's free daily limit for the AI voice is used up. The app shows when it starts over (under Test voice); until then the phone voice reads. Using the AI voice less in Live mode makes the allowance last longer. |
 | "OpenAI voice: Your OpenAI account is out of credit" | The OpenAI voice is paid per use. Add credit under Settings → Billing on platform.openai.com, then tap **Test voice**. |
+| "Reading aloud fell behind the new lines, so some older ones were skipped" | In Live mode, new lines came faster than they can be spoken. The voice always finishes the sentence it's reading and then continues with the newest lines. To hear everything, pause Live (⏸) now and then, or turn on ≡ summaries (shorter to read). |
 | "OpenAI voice: …" another message, and the phone voice reads | Check the key and the internet connection, then tap **Test voice** to try the OpenAI voice again. |
 | Nothing is read aloud, or "no … voice installed" | In the app, tap **Test voice**, then **Install voices**, and download the language. If there's no voice app at all, install **Speech Services by Google** from the Play Store. |
 | "Display over other apps" switch is greyed out | Settings → Apps → Screen Translator → ⋮ (top right) → **Allow restricted settings**, then try again. |

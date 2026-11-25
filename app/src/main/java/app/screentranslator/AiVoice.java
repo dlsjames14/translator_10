@@ -40,6 +40,7 @@ final class AiVoice {
     private static final String BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
     private static final int DEFAULT_RATE = 24000;
     private static final long STALL_MS = 30_000;   // no audio for this long: give up on the AI voice
+    private static final int MAX_ATTEMPTS = 3;     // tries per piece before falling back to the phone voice
     private static final Object END = new Object();
 
     /** A part of the audio: raw 16-bit mono samples and their rate. */
@@ -130,23 +131,70 @@ final class AiVoice {
     // Generating the audio (on a synth thread)
 
     private void generate(Job job, Speaker.Options options) {
-        try {
-            ChunkHandler handler = chunk -> {
-                if (job.generation != currentGeneration()) {
-                    throw new TranslateException("Stopped.", false);   // no longer needed
-                }
-                job.audio.add(chunk);
-            };
-            if (options.openAi) {
-                OpenAiSpeech.stream(job.text, options, handler);
-            } else {
-                stream(job.text, options, handler);
+        final boolean[] gotAudio = {false};
+        ChunkHandler handler = chunk -> {
+            if (job.generation != currentGeneration()) {
+                throw new TranslateException("Stopped.", false);   // no longer needed
             }
-            job.audio.add(END);
-        } catch (TranslateException e) {
-            job.audio.add(e);
-        } catch (RuntimeException e) {
-            job.audio.add(new TranslateException("Something went wrong: " + e, false));
+            gotAudio[0] = true;
+            job.audio.add(chunk);
+        };
+        for (int attempt = 1; ; attempt++) {
+            try {
+                if (options.openAi) {
+                    OpenAiSpeech.stream(job.text, options, handler);
+                } else {
+                    stream(job.text, options, handler);
+                }
+                job.audio.add(END);
+                return;
+            } catch (TranslateException e) {
+                // A hiccup (a dropped connection, a reply without audio): try this piece again before
+                // giving up on the AI voice. Not after part of it played, and not for a wrong key,
+                // missing credit or a rate limit.
+                boolean stopped = job.generation != currentGeneration() || Thread.currentThread().isInterrupted();
+                if (!stopped && !gotAudio[0] && !e.fatal && e.retryAfterMs == 0 && attempt < MAX_ATTEMPTS) {
+                    SystemClock.sleep(400L * attempt);
+                    continue;
+                }
+                job.audio.add(e);
+                return;
+            } catch (RuntimeException e) {
+                job.audio.add(new TranslateException("Something went wrong: " + e, false));
+                return;
+            }
+        }
+    }
+
+    /**
+     * Falling behind (new text comes faster than it can be read): drops the oldest pieces that
+     * haven't started yet, so that at most {@code maxChars} wait. The piece being read is never
+     * cut off, and the newest {@code keepNewest} pieces are always kept.
+     *
+     * @return how many pieces were dropped
+     */
+    int trimBacklog(int maxChars, int keepNewest) {
+        synchronized (lock) {
+            List<Job> waiting = new java.util.ArrayList<>(jobs);   // oldest first
+            int chars = 0;
+            for (Job job : waiting) {
+                if (job.generation == generation) {
+                    chars += job.text.length();
+                }
+            }
+            int dropped = 0;
+            for (int i = 0; i < waiting.size() - keepNewest && chars > maxChars; i++) {
+                Job job = waiting.get(i);
+                if (jobs.remove(job)) {   // (unless it just started playing)
+                    job.task.cancel(true);
+                    chars -= job.text.length();
+                    if (job.generation == generation && pending > 1) {
+                        pending--;
+                    }
+                    dropped++;
+                }
+            }
+            return dropped;
         }
     }
 
@@ -382,7 +430,7 @@ final class AiVoice {
                 Object item = job.audio.poll(200, TimeUnit.MILLISECONDS);
                 if (item == null) {
                     if (SystemClock.uptimeMillis() - lastData > STALL_MS) {
-                        return new TranslateException("Google's voice service stopped responding.", false);
+                        return new TranslateException("The voice service stopped responding.", false);
                     }
                     continue;
                 }
